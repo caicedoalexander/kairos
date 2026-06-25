@@ -8,7 +8,7 @@ import { scanSymbol } from './scan-symbol.ts';
 import type { OhlcvRow } from '../market-data/types.ts';
 import type { Strategy } from './types.ts';
 
-const SYMBOL = 'TEST/USDT';
+const SYMBOL = 'SCANSYM/USDT';
 const TF_MS: Record<string, number> = { '4h': 14_400_000, '1h': 3_600_000, '15m': 900_000 };
 const AS_OF = new Date('2026-03-01T00:00:00Z');
 

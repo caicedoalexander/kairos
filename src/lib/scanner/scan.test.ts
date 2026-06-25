@@ -13,9 +13,6 @@ function bullish(n: number): Candle[] {
     return { symbol: 'BTC/USDT', timeframe: 'x', openTime: new Date(i), o: c, h: c + 0.5, l: c - 0.5, c, v: 100 };
   });
 }
-function flat(n: number): Candle[] {
-  return Array.from({ length: n }, (_, i) => ({ symbol: 'BTC/USDT', timeframe: 'x', openTime: new Date(i), o: 100, h: 100.5, l: 99.5, c: 100, v: 100 }));
-}
 
 const strategy: Strategy = {
   id: 'pullback-alcista', enabled: true, symbols: ['BTC/USDT'], version: 1, riskParams: {},
