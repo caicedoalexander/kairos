@@ -18,6 +18,7 @@
   "dependencies": {
     "@flue/postgres": "^1.0.0-beta.3",
     "@flue/runtime": "^1.0.0-beta.5",
+    "ccxt": "^4.5.60",
     "hono": "^4.12.27",
     "pg": "^8.22.0",
     "ulidx": "^2.4.1",
