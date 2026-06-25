@@ -1,4 +1,4 @@
-# Task 2 Report: Store de Flue en Postgres (`db.ts` + pool compartido)
+# Task 2 Report (SP1): Repositorio de OHLCV
 
 ## Qué se implementó
 
@@ -110,3 +110,185 @@ $ npx vitest run src/db/pool.test.ts
       Tests  1 passed (1)
    Duration  767ms
 ```
+
+---
+
+# Task 2 Report (SP1 market-data): Repositorio de OHLCV
+
+## Qué se implementó
+
+- `src/db/repositories/ohlcv-candles.ts` — repositorio con tres funciones exportadas:
+  - `upsertCandles(rows)` — upsert idempotente en chunks de 500 filas; retorna nº de filas realmente insertadas.
+  - `getLatestOpenTime(symbol, timeframe)` — `SELECT max(open_time)`, retorna `Date | null`.
+  - `getCandles(symbol, timeframe, from, to)` — rango ascendente; convierte columnas `numeric` de pg a `number`.
+- `src/db/repositories/ohlcv-candles.test.ts` — 7 tests de integración contra Postgres real.
+
+## Evidencia TDD RED → GREEN
+
+### RED (Step 2)
+
+```
+npx vitest run src/db/repositories/ohlcv-candles.test.ts
+
+ FAIL  src/db/repositories/ohlcv-candles.test.ts
+Error: Cannot find module './ohlcv-candles.ts'
+
+ Test Files  1 failed (1)
+      Tests  no tests
+   Duration  418ms
+```
+
+### GREEN (Step 4)
+
+```
+npx vitest run src/db/repositories/ohlcv-candles.test.ts
+
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+   Duration  610ms
+```
+
+### Typecheck
+
+```
+npm run typecheck
+> tsc --noEmit
+(sin salida — sin errores)
+```
+
+## Archivos cambiados
+
+| Archivo | Acción |
+|---|---|
+| `src/db/repositories/ohlcv-candles.ts` | creado |
+| `src/db/repositories/ohlcv-candles.test.ts` | creado |
+
+## Auto-revisión
+
+- Implementación verbatim del brief (sin añadir nada extra — YAGNI).
+- Imports con extensión `.ts` (ESM). Comentarios en español.
+- Sin `console.log`, sin secretos hardcodeados, sin mutación.
+- Idempotencia garantizada por `ON CONFLICT DO NOTHING` + `RETURNING 1`.
+- Chunking en `upsertCandles` evita superar el límite de 65 535 params de pg.
+
+## Concerns
+
+Ninguno.
+
+---
+
+# Task 2 Report (SP2 scanner): Detector de estructura (swings → soporte/resistencia)
+
+## Qué se implementó
+
+Se completó la Task 2 del scanner en la rama `feat/fase-1-sp2-scanner`.
+
+### Archivos creados
+
+| Archivo | Rol |
+|---------|-----|
+| `src/lib/scanner/structure.ts` | Implementación de `computeStructure`, `nearestBelow`, `nearestAbove` |
+| `src/lib/scanner/structure.test.ts` | Suite de tests (3 tests) |
+
+### Pasos ejecutados
+
+1. Escribir `src/lib/scanner/structure.test.ts` verbatim del brief (RED).
+2. Ejecutar test → FALLÓ — módulo inexistente (RED confirmado).
+3. Crear `src/lib/scanner/structure.ts` con las tres funciones exportadas.
+4. Ejecutar test → PASÓ (GREEN).
+5. `npm run typecheck` → sin errores.
+6. Commit `b96765f`.
+
+## Evidencia TDD RED → GREEN
+
+### RED (Step 2)
+
+```
+npx vitest run src/lib/scanner/structure.test.ts
+
+ FAIL  src/lib/scanner/structure.test.ts
+Error: Cannot find module './structure.ts'
+
+ Test Files  1 failed (1)
+      Tests  no tests
+   Duration  409ms
+```
+
+### GREEN (Step 4)
+
+```
+npx vitest run src/lib/scanner/structure.test.ts
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Duration  392ms
+```
+
+### Typecheck
+
+```
+npm run typecheck
+> tsc --noEmit
+(sin salida — sin errores)
+```
+
+## Detalles de implementación
+
+### `computeStructure(candles, lookback = 5)`
+
+Detecta swings (picos y valles) por pivotes:
+- Itera sobre índices `i ∈ [lookback, length - lookback)`.
+- Para cada `i`, extrae ventana `[i-lb, i+lb]` de tamaño `2*lb + 1`.
+- Si `candles[i].h` es el máximo de la ventana → swing high → añade a `resistances`.
+- Si `candles[i].l` es el mínimo de la ventana → swing low → añade a `supports`.
+- Los últimos `lookback` velas no se confirman (sin ventana derecha).
+
+### `nearestBelow(price, levels)`
+
+Retorna el máximo nivel ≤ precio, o null si no existe.
+
+### `nearestAbove(price, levels)`
+
+Retorna el mínimo nivel ≥ precio, o null si no existe.
+
+## Resultados de tests
+
+```
+✓ computeStructure › detecta un swing high y un swing low aislados
+  (índice 3 con h=20 detectado como resistencia, índice 7 con l=1 como soporte)
+
+✓ nearestBelow / nearestAbove › nearestBelow devuelve el mayor nivel ≤ precio o null
+  (100, [90, 95, 110]) → 95
+  (80, [90, 95]) → null
+
+✓ nearestBelow / nearestAbove › nearestAbove devuelve el menor nivel ≥ precio o null
+  (100, [90, 110, 120]) → 110
+  (130, [90, 110]) → null
+
+3 tests passed
+```
+
+## Archivos cambiados
+
+```
+ src/lib/scanner/structure.ts       | 28 ++++++++++++++++++++++++++++
+ src/lib/scanner/structure.test.ts  | 28 ++++++++++++++++++++++++++++
+ 2 files changed, 56 insertions(+)
+```
+
+## Auto-revisión
+
+- ✓ Implementación verbatim del brief.
+- ✓ Imports con extensión `.ts` (ESM). Comentarios en español.
+- ✓ Tipo `Candle` importado de `./types.ts`.
+- ✓ Funciones puras, sin estado, sin side effects.
+- ✓ <50 líneas por función, sin abstracciones especulativas.
+- ✓ Sin `any`, tipos explícitos en funciones exportadas.
+- ✓ Sin mutaciones, arrays nuevos retornados.
+- ✓ Sin `console.log`, sin secretos hardcodeados.
+- ✓ Tests 100% cobertura de los 3 casos.
+- ✓ Verificado con `npm run typecheck` (sin errores).
+
+## Concerns
+
+Ninguno.

@@ -21,4 +21,22 @@ describe('computeFeatures', () => {
     expect(() => computeFeatures(short)).not.toThrow();
     expect(computeFeatures(short).emaStack).toBeNull();
   });
+
+  test('serie de precio constante → bbPosition null (denominador cero), no NaN/Infinity', () => {
+    // 250 velas con cierre constante = banda de Bollinger degenerada (upper === lower)
+    const flat = series(Array.from({ length: 250 }, () => 100));
+    const f = computeFeatures(flat);
+    // bbPosition debe ser null (no NaN, no Infinity)
+    expect(f.bbPosition).toBeNull();
+    // Validar que si existe, es un número finito
+    expect(Number.isFinite(f.bbPosition!) || f.bbPosition === null).toBe(true);
+  });
+
+  test('velas vacías → no lanza, devuelve features nulos con close=0', () => {
+    expect(() => computeFeatures([])).not.toThrow();
+    const f = computeFeatures([]);
+    expect(f.close).toBe(0);
+    expect(f.emaStack).toBeNull();
+    expect(f.bbPosition).toBeNull();
+  });
 });

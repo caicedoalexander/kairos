@@ -35,6 +35,28 @@ function rsiStateOf(rsi: number | null): RsiState | null {
 }
 
 export function computeFeatures(candles: Candle[]): Features {
+  // Guarda temprana: si no hay velas, devuelve features vacíos
+  if (candles.length === 0) {
+    return {
+      close: 0,
+      emaStack: null,
+      macdCross: null,
+      adx: null,
+      rsi: null,
+      rsiPrev: null,
+      rsiState: null,
+      stochRsi: null,
+      atrPct: null,
+      bbPosition: null,
+      aboveVwap: null,
+      obv: null,
+      mfi: null,
+      nearestSupport: null,
+      nearestResistance: null,
+      distToSupportPct: null,
+    };
+  }
+
   const close = candles[candles.length - 1].c;
   const values = candles.map((c) => c.c);
 
@@ -47,6 +69,7 @@ export function computeFeatures(candles: Candle[]): Features {
 
   const rsiArr = rsiSeries(values);
   const rsi = last(rsiArr);
+  // Obtiene el RSI anterior (hace dos velas) para detectar cambios de estado
   const rsiPrev = nth(rsiArr, -2);
   const rsiState = rsiStateOf(rsi);
 
@@ -56,7 +79,9 @@ export function computeFeatures(candles: Candle[]): Features {
   const atrPct = atr !== null ? (atr / close) * 100 : null;
 
   const bb = last(bollingerSeries(values));
-  const bbPosition = bb ? (close - bb.lower) / (bb.upper - bb.lower) : null;
+  // Protege contra denominador cero: si banda superior = inferior (serie plana), bbPosition es null
+  const bbDenom = bb ? bb.upper - bb.lower : 0;
+  const bbPosition = bb && bbDenom !== 0 ? (close - bb.lower) / bbDenom : null;
 
   const vwap = last(vwapSeries(candles));
   const aboveVwap = vwap !== null ? close > vwap : null;
