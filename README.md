@@ -64,6 +64,20 @@ kairos/
 └─ .claude/agents/          # revisores a medida (diseño, plan, implementación)
 ```
 
+## Arranque local (Fase 0)
+
+El andamiaje de Fase 0 (infra, esquema de dominio, ccxt, canal Evolution) ya está implementado y testeable sin ningún agente ni workflow:
+
+```bash
+docker compose up -d       # levanta Postgres 16 + Redis 7
+npm install
+cp .env.example .env       # rellena DATABASE_URL y variables mínimas
+npm run migrate            # aplica el esquema kairos (idempotente)
+npm test                   # suite verde, cobertura ≥ 80 %
+```
+
+> **`flue dev` / `flue build`, el boot del server (`/health`, tablas `flue_*`) y el `Dockerfile` llegan en Fase 1**, cuando exista el primer workflow real. Flue exige ≥ 1 agente o workflow para compilar; Fase 0 no tiene ninguno por diseño.
+
 ## Puesta en marcha (planeada)
 
 1. **Provisiona los prerequisitos** (ver `.env.example`):

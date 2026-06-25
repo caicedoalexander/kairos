@@ -41,3 +41,16 @@ describe('sendWhatsApp', () => {
     await expect(sendWhatsApp('x')).rejects.toThrow();
   });
 });
+
+describe('sendWhatsappTool.run', () => {
+  test('delega en sendWhatsApp y devuelve el messageId', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ key: { id: 'msg-tool' } }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { sendWhatsappTool } = await import('./whatsapp.ts');
+    const result = await sendWhatsappTool.run({ input: { text: 'hola tool' } });
+    expect(result.messageId).toBe('msg-tool');
+  });
+});

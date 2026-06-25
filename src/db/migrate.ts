@@ -12,6 +12,8 @@ export async function migrate(): Promise<void> {
 }
 
 // Entrypoint CLI: `npm run migrate`.
+// v8 ignore next 11 — bloque de arranque CLI; no se puede unit-testear sin invocar el proceso
+// como entrypoint directo. Se valida con `npm run migrate` en Fase 0 (ver task-8-brief.md).
 const invokedDirectly =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 

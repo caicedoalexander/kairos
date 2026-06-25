@@ -45,6 +45,7 @@ export async function handleEvolutionWebhook(
 
 // Binding Flue: adaptador delgado que traduce la petición HTTP a handleEvolutionWebhook.
 // Path: /channels/evolution/webhook
+// v8 ignore next 4 — glue de integración con Flue/Hono; se valida en el boot de Fase 1.
 const webhook: Handler = async (c) => {
   const body: unknown = await c.req.json();
   const result = await handleEvolutionWebhook(c.req.raw.headers, body);
