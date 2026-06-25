@@ -255,7 +255,7 @@ export default postgres(process.env.DATABASE_URL!);
 | `orders` | `id, idempotency_key UNIQUE, decision_id, side, size, type, tif, purpose(entry/sl/tp), parent_id, status, exchange_order_id, mode` | Guardia DB contra duplicados; `purpose`/`parent_id` ligan los legs del OCO (§18) |
 | `fills` | `id, order_id, price, qty, fee, ts` | Reconciliación de llenados |
 | `positions` | `id, symbol, side, entry, size, sl, tp, status, realized_pnl, strategy_id, mode` | Posiciones abiertas (source of truth); `mode` aísla sim/testnet/live para el reconciler |
-| `account_snapshots` | `ts, equity, peak_equity, drawdown, daily_pnl` | Límites de pérdida diaria/drawdown (§19) |
+| `account_snapshots` | `id, ts, equity, peak_equity, drawdown, daily_pnl` | Límites de pérdida diaria/drawdown (§19); `id` (ULID) PK del snapshot append-only |
 | `pending_approvals` | `id, decision_id, reason, payload jsonb, status(pending/approved/rejected/expired), expires_at, resolved_by, resolved_at` | Circuit-breaker async, resuelto por WhatsApp (§19); NO es pausa de workflow |
 | `audit_log` | `ts, event_type, actor, payload jsonb` | Rastro completo |
 | `ohlcv_candles` | `symbol, timeframe, open_time, o,h,l,c,v, PK(symbol,timeframe,open_time)` | Histórico de velas **cerradas** (alimenta backtest, §20) |
