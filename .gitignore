@@ -1,1 +1,45 @@
-node_modules
+# ── Dependencias ──
+node_modules/
+
+# ── Entorno y secretos ──
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+# (se versiona .env.example, NO .env)
+
+# ── Build / salida ──
+dist/
+build/
+*.tsbuildinfo
+
+# ── Estado local de desarrollo ──
+# DB SQLite local de Flue (en prod se usa Postgres en el VPS)
+data/
+*.sqlite
+*.sqlite-journal
+*.db
+
+# ── Logs ──
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# ── Tests / cobertura ──
+coverage/
+.nyc_output/
+
+# ── Cloudflare (por si se usa para el dashboard de fase 2) ──
+.wrangler/
+
+# ── Claude Code: se versionan agents/ y skills/ del proyecto; no la config local ──
+.claude/settings.local.json
+
+# ── OS / editor ──
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
