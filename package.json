@@ -11,6 +11,7 @@
     "build": "flue build --target node",
     "start": "node dist/server.mjs",
     "migrate": "node --experimental-strip-types src/db/migrate.ts",
+    "backfill": "node --experimental-strip-types src/lib/market-data/backfill.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
