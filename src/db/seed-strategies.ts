@@ -28,7 +28,9 @@ export async function seedStrategies(): Promise<void> {
      ON CONFLICT (id) DO UPDATE
        SET trigger_config = EXCLUDED.trigger_config,
            risk_params    = EXCLUDED.risk_params,
-           enabled        = EXCLUDED.enabled`,
+           enabled        = EXCLUDED.enabled,
+           timeframe      = EXCLUDED.timeframe,
+           version        = EXCLUDED.version`,
     ['pullback-alcista', '{BTC/USDT,ETH/USDT}', JSON.stringify(TRIGGER_CONFIG), JSON.stringify(RISK_PARAMS)],
   );
 }
