@@ -24,7 +24,7 @@ Del spec (`docs/superpowers/specs/2026-06-25-kairos-fase-1-sp2-scanner-design.md
 - **pg auto-parsea** jsonb→objeto y text[]→array al leer; al escribir text[] usar literal `'{a,b}'::text[]`.
 - **Orden env-antes-de-pool** (como `migrate.ts`): en `seed-strategies.ts` el `pool`/`query` se importa dinámicamente dentro de la función y `dotenv` en el guard CLI.
 - Estilo: funciones <50 líneas, archivos <800, anidamiento ≤4, inmutabilidad, sin secretos, sin `console.log`. Comentarios/commits en español; identificadores en inglés. Sin atribución en commits.
-- **Precondición tests de integración:** Postgres de docker arriba (`docker compose up -d postgres`); `.env` con `DATABASE_URL` (Fase 0). Tests de repo migran en `beforeAll`. `vitest.config.ts`/`vitest.setup.ts` ya existen — no tocar.
+- **Precondición tests de integración:** Postgres de docker arriba (`docker compose up -d postgres`). `vitest.setup.ts` ya hace `import 'dotenv/config'`, así que `DATABASE_URL` (de `.env`, Fase 0) está disponible en el runner de Vitest — **no** toques `vitest.config.ts`/`vitest.setup.ts`. Tests de repo migran en `beforeAll`. Todos los tests de integración (repos de Task 9 y `scan-symbol` de Task 10) comparten esta precondición; los unit (scan puro, features, indicadores, predicados, etc.) no tocan DB.
 
 ---
 
@@ -178,6 +178,7 @@ export interface Strategy {
   triggerConfig: TriggerConfig;
   riskParams: Record<string, unknown>;
   version: number;
+  skillName?: string | null;
 }
 ```
 
@@ -389,9 +390,10 @@ describe('computeFeatures', () => {
     expect(f.close).toBe(349);
   });
 
-  test('datos insuficientes para EMA200 → emaStack null', () => {
-    const f = computeFeatures(series(Array.from({ length: 50 }, (_, i) => 100 + i)));
-    expect(f.emaStack).toBeNull();
+  test('datos insuficientes para EMA200 → emaStack null, sin lanzar', () => {
+    const short = series(Array.from({ length: 50 }, (_, i) => 100 + i));
+    expect(() => computeFeatures(short)).not.toThrow();
+    expect(computeFeatures(short).emaStack).toBeNull();
   });
 });
 ```
@@ -716,6 +718,13 @@ describe('parseTriggerConfig', () => {
   test('acepta un config válido (árbol anidado)', () => {
     expect(parseTriggerConfig(valid).timeframes.trigger).toBe('15m');
   });
+  test('acepta nodos anidados all/any recursivos (v.lazy)', () => {
+    const nested = {
+      timeframes: { bias: '4h', context: '1h', trigger: '15m' },
+      entry: { all: [{ any: [{ predicate: 'ema_stack_bullish' }, { tf: '4h', predicate: 'ema_stack_bearish' }] }] },
+    };
+    expect(() => parseTriggerConfig(nested)).not.toThrow();
+  });
   test('lanza ante predicado desconocido', () => {
     const bad = { ...valid, entry: { all: [{ predicate: 'no_existe' }] } };
     expect(() => parseTriggerConfig(bad)).toThrow();
@@ -764,6 +773,21 @@ describe('rules-engine', () => {
     const noTf: TriggerConfig = { ...config, entry: { all: [{ predicate: 'above_vwap' }] }, skip: undefined };
     expect(evaluateEntry(noTf, { '15m': bull }, '15m', ctx)).toBe(true);
     expect(evaluateEntry(noTf, {}, '15m', ctx)).toBe(false);
+  });
+
+  test('entry exacto de la estrategia semilla (4 predicados) evalúa true cuando todos se cumplen', () => {
+    const seed: TriggerConfig = {
+      timeframes: { bias: '4h', context: '1h', trigger: '15m' },
+      entry: { all: [
+        { tf: '4h', predicate: 'ema_stack_bullish' },
+        { tf: '1h', predicate: 'above_vwap' },
+        { tf: '15m', predicate: 'rsi_cross_up', args: { level: 40 } },
+        { tf: '15m', predicate: 'near_support', args: { max_dist_pct: 0.5 } },
+      ] },
+    };
+    expect(evaluateEntry(seed, featuresByTf, '15m', ctx)).toBe(true);
+    const farFromSupport = { ...featuresByTf, '15m': { ...bull, distToSupportPct: 2 } };
+    expect(evaluateEntry(seed, farFromSupport, '15m', ctx)).toBe(false);
   });
 });
 ```
@@ -1090,11 +1114,13 @@ export function scan(
 }
 ```
 
-- [ ] **Step 5: Correr el test (pasa) + typecheck**
+- [ ] **Step 5: Correr el test (pasa) + typecheck + verificar invariante puro**
 
 Run: `npx vitest run src/lib/scanner/scan.test.ts`
 Expected: PASS (4 tests).
 Run: `npm run typecheck` → sin errores.
+Run: `grep -nE "pool|/repositories/" src/lib/scanner/scan.ts src/lib/scanner/snapshot.ts src/lib/scanner/features.ts`
+Expected: sin coincidencias — el scan puro y sus dependencias NO cargan `pool.ts` (testeable sin DB).
 
 - [ ] **Step 6: Commit**
 
@@ -1192,17 +1218,18 @@ import type { Strategy } from '../../lib/scanner/types.ts';
 
 interface StrategyRow {
   id: string; enabled: boolean; symbols: string[];
-  trigger_config: unknown; risk_params: Record<string, unknown>; version: number;
+  trigger_config: unknown; risk_params: Record<string, unknown>; version: number; skill_name: string | null;
 }
 
 function toStrategy(r: StrategyRow): Strategy {
   return {
     id: r.id, enabled: r.enabled, symbols: r.symbols,
-    triggerConfig: parseTriggerConfig(r.trigger_config), riskParams: r.risk_params, version: r.version,
+    triggerConfig: parseTriggerConfig(r.trigger_config), riskParams: r.risk_params,
+    version: r.version, skillName: r.skill_name,
   };
 }
 
-const SELECT = 'SELECT id, enabled, symbols, trigger_config, risk_params, version FROM kairos.strategies';
+const SELECT = 'SELECT id, enabled, symbols, trigger_config, risk_params, version, skill_name FROM kairos.strategies';
 
 export async function getStrategy(id: string): Promise<Strategy | null> {
   const rows = await query<StrategyRow>(`${SELECT} WHERE id = $1`, [id]);
@@ -1210,7 +1237,7 @@ export async function getStrategy(id: string): Promise<Strategy | null> {
 }
 
 export async function getEnabledStrategies(): Promise<Strategy[]> {
-  const rows = await query<StrategyRow>(`${SELECT} WHERE enabled = true`);
+  const rows = await query<StrategyRow>(`${SELECT} WHERE enabled = true`, []);
   return rows.map(toStrategy);
 }
 ```
@@ -1331,9 +1358,9 @@ import { migrate } from '../../db/migrate.ts';
 import { pool, query } from '../../db/pool.ts';
 import { seedStrategies } from '../../db/seed-strategies.ts';
 import { upsertCandles } from '../../db/repositories/ohlcv-candles.ts';
-import { getStrategy } from '../../db/repositories/strategies.ts';
 import { scanSymbol } from './scan-symbol.ts';
 import type { OhlcvRow } from '../market-data/types.ts';
+import type { Strategy } from './types.ts';
 
 const SYMBOL = 'TEST/USDT';
 const TF_MS: Record<string, number> = { '4h': 14_400_000, '1h': 3_600_000, '15m': 900_000 };
@@ -1361,26 +1388,34 @@ afterAll(async () => {
 });
 
 describe('scanSymbol (integración)', () => {
-  test('end-to-end: velas alcistas + estrategia semilla → signal persistida', async () => {
-    const strategy = await getStrategy('pullback-alcista');
-    const id = await scanSymbol(strategy!, SYMBOL, AS_OF);
-    // El setup puede o no disparar según near_support/rsi_cross_up sobre la serie sintética;
-    // si dispara, debe quedar persistida con el símbolo correcto.
-    if (id !== null) {
-      const rows = await query<{ symbol: string }>('SELECT symbol FROM kairos.signals WHERE id = $1', [id]);
-      expect(rows[0]?.symbol).toBe(SYMBOL);
-    }
-    expect(id === null || typeof id === 'string').toBe(true);
+  // Estrategia ad-hoc con el id de la semilla (FK válida en strategies) pero entry mínimo
+  // garantizable: ema_stack_bullish sobre 250 velas alcistas SÍ dispara → assert duro del
+  // criterio §10.5 (persistencia end-to-end), sin depender de near_support/rsi_cross_up.
+  const simple: Strategy = {
+    id: 'pullback-alcista', enabled: true, symbols: [SYMBOL], version: 1, riskParams: {},
+    triggerConfig: {
+      timeframes: { bias: '4h', context: '1h', trigger: '15m' },
+      entry: { all: [{ tf: '4h', predicate: 'ema_stack_bullish' }] },
+    },
+  };
+
+  test('end-to-end: velas alcistas → signal persistida (assert duro)', async () => {
+    const id = await scanSymbol(simple, SYMBOL, AS_OF);
+    expect(id).not.toBeNull();
+    const rows = await query<{ symbol: string; indicator_snapshot: { mtfAlignment: string } }>(
+      'SELECT symbol, indicator_snapshot FROM kairos.signals WHERE id = $1', [id],
+    );
+    expect(rows[0]?.symbol).toBe(SYMBOL);
+    expect(rows[0]?.indicator_snapshot.mtfAlignment).toBe('aligned');
   });
 
   test('símbolo sin velas → null', async () => {
-    const strategy = await getStrategy('pullback-alcista');
-    expect(await scanSymbol(strategy!, 'SIN/DATOS', AS_OF)).toBeNull();
+    expect(await scanSymbol(simple, 'SIN/DATOS', AS_OF)).toBeNull();
   });
 });
 ```
 
-> Nota: el primer test es tolerante (el disparo depende de que la serie sintética cumpla `rsi_cross_up`/`near_support`); lo que afirma con dureza es que **si** dispara, persiste correctamente, y que `scanSymbol` no lanza. El disparo determinista end-to-end se cubre en el test PURO de `scan.test.ts` (T8). Mantén el assert de "símbolo sin velas → null" como la garantía dura del camino DB.
+> Nota: `scan-symbol.test.ts` es un test de **integración** (requiere Postgres arriba, como los repos). Usa una estrategia ad-hoc con entry mínimo (`ema_stack_bullish`) para forzar el disparo de forma determinista y afirmar con dureza la persistencia (criterio §10.5). La estrategia semilla completa (4 predicados de entry) se ejercita a nivel de unidad en el motor de reglas (T6).
 
 - [ ] **Step 2: Correr el test (falla)**
 
@@ -1398,18 +1433,24 @@ import { getCandles } from '../../db/repositories/ohlcv-candles.ts';
 import { getFundingRange } from '../../db/repositories/funding-rates.ts';
 import { getOpenInterestRange } from '../../db/repositories/open-interest.ts';
 import { insertSignal } from '../../db/repositories/signals.ts';
-import { timeframeToMs, type Timeframe } from '../market-data/config.ts';
+import { timeframeToMs, TIMEFRAMES, type Timeframe } from '../market-data/config.ts';
 
 const LOOKBACK = 300;                 // velas por TF (cubre EMA200 + margen)
 const DERIV_LOOKBACK_DAYS = 30;       // ventana para funding_z / oi_change_pct
 const DAY_MS = 86_400_000;
+
+// Estrecha un TF de config (string) al union soportado; lanza si es desconocido (evita NaN/Invalid Date).
+function asTimeframe(tf: string): Timeframe {
+  if ((TIMEFRAMES as readonly string[]).includes(tf)) return tf as Timeframe;
+  throw new Error(`timeframe no soportado por el scanner: ${tf}`);
+}
 
 // Conveniencia DB-facing: lee velas+derivados de SP1 hasta asOf, llama scan, persiste si dispara.
 export async function scanSymbol(strategy: Strategy, symbol: string, asOf: Date): Promise<string | null> {
   const tfs = strategy.triggerConfig.timeframes;
   const candlesByTf: CandlesByTimeframe = {};
   for (const tf of [tfs.bias, tfs.context, tfs.trigger]) {
-    const from = new Date(asOf.getTime() - LOOKBACK * timeframeToMs(tf as Timeframe));
+    const from = new Date(asOf.getTime() - LOOKBACK * timeframeToMs(asTimeframe(tf)));
     candlesByTf[tf] = await getCandles(symbol, tf, from, asOf);
   }
 
