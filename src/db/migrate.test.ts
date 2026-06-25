@@ -26,13 +26,17 @@ describe('migrate', () => {
   });
 
   test('orders.idempotency_key tiene restricción UNIQUE', async () => {
-    const rows = await query<{ count: string }>(
-      `SELECT COUNT(*) AS count
-         FROM information_schema.table_constraints
-        WHERE table_schema = 'kairos' AND table_name = 'orders'
-          AND constraint_type = 'UNIQUE'`,
+    const rows = await query<{ column_name: string }>(
+      `SELECT kcu.column_name
+         FROM information_schema.table_constraints tc
+         JOIN information_schema.key_column_usage kcu
+           ON tc.constraint_name = kcu.constraint_name
+          AND tc.table_schema = kcu.table_schema
+        WHERE tc.table_schema = 'kairos'
+          AND tc.table_name = 'orders'
+          AND tc.constraint_type = 'UNIQUE'`,
     );
-    expect(Number(rows[0]?.count)).toBeGreaterThanOrEqual(1);
+    expect(rows.map((r) => r.column_name)).toContain('idempotency_key');
   });
 
   test('es idempotente: aplicar de nuevo no falla', async () => {

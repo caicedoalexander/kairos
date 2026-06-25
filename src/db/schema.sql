@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS kairos.fills (
 CREATE TABLE IF NOT EXISTS kairos.positions (
   id           text PRIMARY KEY,
   symbol       text NOT NULL,
-  side         text NOT NULL CHECK (side IN ('long')),
+  side         text NOT NULL CHECK (side IN ('long')),   -- spot long-only; 'short' se añade con futuros (§14)
   entry        numeric NOT NULL,
   size         numeric NOT NULL,
   sl           numeric,
