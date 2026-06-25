@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest';
-import { createPublicClient, createAuthenticatedClient } from './ccxt-client.ts';
+import { createPublicClient, createAuthenticatedClient, createPerpPublicClient } from './ccxt-client.ts';
 
 beforeEach(() => {
   vi.unstubAllEnvs();
@@ -25,5 +25,13 @@ describe('ccxt-client', () => {
     vi.stubEnv('BINANCE_API_KEY', '');
     vi.stubEnv('BINANCE_API_SECRET', '');
     expect(() => createAuthenticatedClient()).toThrow();
+  });
+});
+
+describe('createPerpPublicClient', () => {
+  test('crea un cliente público del perp USDM sin credenciales', () => {
+    const client = createPerpPublicClient();
+    expect(client.id).toBe('binanceusdm');
+    expect(client.apiKey).toBeFalsy();
   });
 });

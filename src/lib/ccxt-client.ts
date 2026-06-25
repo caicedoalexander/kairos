@@ -21,3 +21,8 @@ export function createAuthenticatedClient(): Exchange {
   }
   return client;
 }
+
+// Cliente PÚBLICO del mercado USDM perp (funding/OI read-only, §15). Sin API key.
+export function createPerpPublicClient(): Exchange {
+  return new ccxt.binanceusdm({ enableRateLimit: true });
+}
