@@ -3,7 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.19.0" },
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "scripts": {
     "dev": "flue dev --target node",
     "build": "flue build --target node",
@@ -14,13 +16,16 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@flue/postgres": "^1.0.0-beta.3",
     "@flue/runtime": "^1.0.0-beta.5",
     "hono": "^4.12.27",
+    "pg": "^8.22.0",
     "valibot": "^1.4.1"
   },
   "devDependencies": {
     "@flue/cli": "^1.0.0-beta.5",
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.20.0",
     "@vitest/coverage-v8": "^4.1.9",
     "dotenv": "^17.4.2",
     "typescript": "^6.0.3",
