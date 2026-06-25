@@ -38,6 +38,9 @@ coverage/
 # ── Claude Code: se versionan agents/ y skills/ del proyecto; no la config local ──
 .claude/settings.local.json
 
+# ── Superpowers SDD: scratch de proceso (briefs, reportes, ledger, diffs), no es código ──
+.superpowers/
+
 # ── OS / editor ──
 .DS_Store
 Thumbs.db
