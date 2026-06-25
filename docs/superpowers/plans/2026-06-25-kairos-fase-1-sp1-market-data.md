@@ -25,6 +25,7 @@ Copiadas del spec (`docs/superpowers/specs/2026-06-25-kairos-fase-1-sp1-market-d
 - Estilo: funciones <50 líneas, archivos <800, anidamiento ≤4, inmutabilidad, sin secretos hardcodeados, sin `console.log` de debug (`console.error` para reporte intencional del CLI, como `migrate.ts`).
 - Comentarios y mensajes de commit en **español** (con diacríticos); identificadores en inglés. Sin atribución en commits (deshabilitada globalmente).
 - **Precondición de tests de integración:** Postgres de docker arriba (`docker compose up -d postgres`) y `DATABASE_URL` en `.env` (configurado en Fase 0). Los tests de repo migran el esquema en `beforeAll`.
+- **Tooling de tests ya existe (Fase 0):** `vitest.config.ts` (provider v8, umbrales 80% en las 4 métricas) y `vitest.setup.ts` (`import 'dotenv/config'`). No crear ni modificar estos archivos en SP1.
 
 ---
 
@@ -56,7 +57,7 @@ Copiadas del spec (`docs/superpowers/specs/2026-06-25-kairos-fase-1-sp1-market-d
 **Interfaces:**
 - Consumes: `getMode` (no aquí); `ccxt`, `Exchange` de `ccxt`.
 - Produces:
-  - `SYMBOLS: readonly string[]`, `TIMEFRAMES: readonly ['15m','1h','4h']`, `type Timeframe`, `BACKFILL_DAYS: number`, `FETCH_LIMIT: number`, `OI_HISTORY_TIMEFRAME: string`
+  - `SYMBOLS: readonly string[]`, `TIMEFRAMES: readonly ['15m','1h','4h']`, `type Timeframe`, `BACKFILL_DAYS: number`, `FETCH_LIMIT: number`, `OI_HISTORY_TIMEFRAME: string`, `OI_FETCH_LIMIT: number`
   - `timeframeToMs(timeframe: Timeframe): number`
   - `toPerpSymbol(spotSymbol: string): string`
   - `interface OhlcvRow { symbol, timeframe: string; openTime: Date; o,h,l,c,v: number }`
@@ -113,6 +114,9 @@ export const FETCH_LIMIT = 1000;
 // Granularidad del histórico de open interest (Binance retiene poco; §6 del spec).
 export const OI_HISTORY_TIMEFRAME = '5m';
 
+// El endpoint de OI histórico de Binance limita a 500 filas/request (máx. documentado).
+export const OI_FETCH_LIMIT = 500;
+
 const MINUTE_MS = 60_000;
 const TIMEFRAME_MINUTES: Record<Timeframe, number> = { '15m': 15, '1h': 60, '4h': 240 };
 
@@ -121,7 +125,8 @@ export function timeframeToMs(timeframe: Timeframe): number {
   return TIMEFRAME_MINUTES[timeframe] * MINUTE_MS;
 }
 
-// Símbolo del perp USDM equivalente al spot (ambos cotizados en USDT). §15.
+// Símbolo del perp USDM equivalente al spot. Asume cotización en USDT (cierto para SYMBOLS:
+// 'BTC/USDT' → 'BTC/USDT:USDT'). §15.
 export function toPerpSymbol(spotSymbol: string): string {
   return `${spotSymbol}:USDT`;
 }
@@ -260,6 +265,15 @@ describe('upsertCandles', () => {
 
   test('lote vacío inserta 0', async () => {
     expect(await upsertCandles([])).toBe(0);
+  });
+
+  test('chunking: inserta >500 filas en múltiples chunks y suma el total', async () => {
+    const base = Date.parse('2026-02-01T00:00:00Z');
+    const rows = Array.from({ length: 501 }, (_, i) =>
+      candle(new Date(base + i * 15 * 60_000).toISOString(), 100 + i),
+    );
+    expect(await upsertCandles(rows)).toBe(501); // 500 + 1 → 2 chunks
+    expect(await upsertCandles(rows)).toBe(0);    // idempotente tras chunking
   });
 });
 
@@ -686,7 +700,8 @@ import type { Exchange } from 'ccxt';
 import { timeframeToMs, type Timeframe } from './config.ts';
 import type { OhlcvRow } from './types.ts';
 
-// ccxt OHLCV: [timestamp, open, high, low, close, volume] (a veces 7 con count). Exigimos ≥6 numbers.
+// ccxt OHLCV: [timestamp, open, high, low, close, volume]; cada campo Num = number | undefined.
+// Exigimos ≥6 numbers reales: un campo undefined o no-numérico = contrato ccxt roto → v.parse lanza.
 const OhlcvArraySchema = v.pipe(v.array(v.number()), v.minLength(6));
 
 // Una vela está cerrada si su cierre (open + duración del TF) ya pasó respecto a `now` (§15.3).
@@ -812,6 +827,7 @@ const OpenInterestSchema = v.object({
 });
 
 // Funding histórico del perp USDM. Recibe el símbolo spot; persiste el símbolo spot.
+// `client` DEBE ser un cliente perp (ccxt.binanceusdm); un cliente Spot consultaría otro mercado.
 export async function fetchFundingHistory(
   client: Exchange, symbol: string, since: number, limit = 1000,
 ): Promise<FundingRow[]> {
@@ -823,6 +839,7 @@ export async function fetchFundingHistory(
 }
 
 // Open interest histórico del perp USDM. oiValue puede faltar → null.
+// `client` DEBE ser un cliente perp (ccxt.binanceusdm), igual que fetchFundingHistory.
 export async function fetchOpenInterestHistory(
   client: Exchange, symbol: string, timeframe: string, since: number, limit = 500,
 ): Promise<OpenInterestRow[]> {
@@ -926,11 +943,11 @@ describe('backfillCursor', () => {
 
   test('corta si el cursor no avanza (evita ciclo infinito)', async () => {
     const upsert = vi.fn(async (rows: Row[]) => rows.length);
-    const src: CursorSource<Row> = {
-      fetchPage: async () => [{ ts: 50 }], // ts ≤ since siempre
-      upsert, cursorOf: (r) => r.ts, step: 1,
-    };
+    const fetchPage = vi.fn(async () => [{ ts: 50 }]); // ts ≤ since siempre
+    const src: CursorSource<Row> = { fetchPage, upsert, cursorOf: (r) => r.ts, step: 1 };
     expect(await backfillCursor(src, 100, 1_000_000, noSleep)).toBe(1);
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+    expect(upsert).toHaveBeenCalledTimes(1);
   });
 });
 ```
@@ -942,7 +959,7 @@ Expected: FAIL — módulo inexistente.
 
 - [ ] **Step 3: Implementar `backfill.ts`**
 
-> Nota: los repos y `pool` se importan **dinámicamente dentro de `main()`** para que `pool.ts` (que lanza si falta `DATABASE_URL`) no se cargue al importar el módulo —mismo patrón que `migrate.ts`. Los imports estáticos de arriba (`config`, `ohlcv`, `derivatives`, `ccxt-client`, `ccxt`) NO cargan `pool`.
+> **Orden env-antes-de-pool (verificado).** `pool.ts` lanza si falta `DATABASE_URL` al importarse, así que ningún import estático de `backfill.ts` debe arrastrarlo. Verificado: `config`/`ohlcv`/`derivatives`/`types` no importan `pool`; `ccxt-client.ts` → `mode.ts` tampoco (y `getMode()` lee env solo al llamarse, no al importar); los clientes ccxt se construyen DENTRO de `main()`, tras `dotenv`. Los repos y `pool` se importan **dinámicamente dentro de `main()`** —mismo patrón que `migrate.ts`. Si en el futuro `mode.ts`/`ccxt-client.ts` llegaran a importar `pool`, mover su uso a importación dinámica dentro de `main()`.
 
 ```ts
 // src/lib/market-data/backfill.ts
@@ -950,7 +967,7 @@ import ccxt from 'ccxt';
 import { pathToFileURL } from 'node:url';
 import { createPublicClient, createPerpPublicClient } from '../ccxt-client.ts';
 import {
-  SYMBOLS, TIMEFRAMES, BACKFILL_DAYS, FETCH_LIMIT, OI_HISTORY_TIMEFRAME, timeframeToMs,
+  SYMBOLS, TIMEFRAMES, BACKFILL_DAYS, FETCH_LIMIT, OI_HISTORY_TIMEFRAME, OI_FETCH_LIMIT, timeframeToMs,
 } from './config.ts';
 import { fetchClosedOHLCV } from './ohlcv.ts';
 import { fetchFundingHistory, fetchOpenInterestHistory } from './derivatives.ts';
@@ -985,6 +1002,9 @@ export interface CursorSource<Row> {
 }
 
 // Bucle de backfill resumible por cursor temporal. Genérico para OHLCV/funding/OI (DRY).
+// Asume páginas ASCENDENTES por ts (contrato de Binance en fetchOHLCV/fetchFundingRateHistory/
+// fetchOpenInterestHistory): usa la última fila como cursor. `step` = ms a saltar tras el último
+// cursor (tfMs para OHLCV; 1 ms para funding/OI, registros discretos).
 export async function backfillCursor<Row>(
   src: CursorSource<Row>, startSince: number, now: number, sleep: Sleep,
 ): Promise<number> {
@@ -1050,7 +1070,7 @@ async function main(): Promise<void> {
     const oLatest = await getLatestOiTs(symbol);
     const o = await backfillCursor<OpenInterestRow>(
       {
-        fetchPage: (since) => fetchOpenInterestHistory(perp, symbol, OI_HISTORY_TIMEFRAME, since, FETCH_LIMIT),
+        fetchPage: (since) => fetchOpenInterestHistory(perp, symbol, OI_HISTORY_TIMEFRAME, since, OI_FETCH_LIMIT),
         upsert: upsertOpenInterest,
         cursorOf: (r) => r.ts.getTime(),
         step: 1,
