@@ -29,7 +29,7 @@ Cada task hereda implícitamente estas reglas (valores verbatim de `ARCHITECTURE
 
 ### Task 1: Bootstrap del proyecto Flue (Node target)
 
-Deja `flue build`/`flue dev` funcionando, las dependencias base instaladas, la config de TypeScript/Vitest y un endpoint `/health` testeable. No depende de ccxt ni de la DB.
+Deja el proyecto Flue estructurado (config, dependencias base, TypeScript/Vitest) y un endpoint `/health` testeable. El `flue build`/boot se **difiere a Fase 1** (Flue exige ≥1 agente/workflow para compilar y Fase 0 no tiene ninguno por diseño). No depende de ccxt ni de la DB.
 
 **Files:**
 - Modify: `package.json` (scripts, `engines`, `type`, deps base)
@@ -256,10 +256,12 @@ export default app;
 Run: `npx vitest run src/health.test.ts`
 Expected: PASA.
 
-- [ ] **Step 15: Smoke de build del target Node**
+- [ ] **Step 15: Gate de la task (sin `flue build`)**
 
-Run: `npx flue build --target node`
-Expected: build exitoso; existe `dist/server.mjs`. (No arranca el server todavía — eso necesita la DB de la Task 2.)
+`flue build` se **difiere a Fase 1**: Flue exige ≥1 agente/workflow para compilar y Fase 0 no tiene ninguno por diseño (cero agentes/LLM). **No** crear stubs de agente/workflow para forzar el build. El gate de esta task es solo el test verde:
+
+Run: `npx vitest run src/health.test.ts`
+Expected: PASA.
 
 - [ ] **Step 16: Commit**
 
@@ -1206,10 +1208,12 @@ Mantén el binding como un **adaptador delgado** (solo traduce la petición HTTP
 Run: `npx vitest run src/channels/evolution.test.ts`
 Expected: PASA.
 
-- [ ] **Step 7: Build con el canal descubierto**
+- [ ] **Step 7: Verificar tipos (build diferido a Fase 1)**
 
-Run: `npx flue build --target node`
-Expected: build exitoso; Flue descubre `channels/evolution.ts` (publica `/channels/evolution/...`).
+`flue build` se valida en Fase 1 (requiere ≥1 agente/workflow, ausente en Fase 0). Aquí solo se type-checa que el módulo del canal compila:
+
+Run: `npm run typecheck`
+Expected: sin errores. La publicación real de `/channels/evolution/...` por `flue build` se verifica en Fase 1 junto al primer workflow.
 
 - [ ] **Step 8: Commit**
 
@@ -1220,14 +1224,13 @@ git commit -m "feat: canal de ingreso WhatsApp de Evolution (verificación + aud
 
 ---
 
-### Task 8: Gate de Fase 0 (smoke end-to-end + cierre)
+### Task 8: Gate de cierre de Fase 0
 
-Verifica que el andamiaje completo arranca y que ambos esquemas (Flue `flue_*` y dominio `kairos`) quedan provisionados. Cierra la fase.
+Verifica que todo el andamiaje pasa sus tests y que el esquema `kairos` se aplica limpio. El `flue build`, el boot del server (creación de `flue_*`, `/health`) y el `Dockerfile` se **difieren a Fase 1**, donde aparece el primer workflow real — Flue exige ≥1 agente/workflow para compilar y Fase 0 no tiene ninguno por diseño.
 
 **Files:**
-- Modify: `Dockerfile` (crear) — `node:22.19-slim`, servicio long-running
 - Modify: `README.md` (apuntar el flujo de arranque de Fase 0)
-- Test: ejecución de toda la suite + cobertura
+- Test: ejecución de toda la suite + cobertura + typecheck + esquema `kairos`
 
 - [ ] **Step 1: Levantar dependencias y migrar el dominio**
 
@@ -1248,68 +1251,37 @@ Expected: todos los tests PASAN; cobertura ≥ 80 % en líneas/funciones/ramas/s
 Run: `npm run typecheck`
 Expected: sin errores.
 
-- [ ] **Step 4: Build y arranque del server; verificar `/health` y tablas `flue_*`**
+- [ ] **Step 4: Verificar el esquema `kairos` aplicado**
 
-Run (en una terminal):
+`flue build`/boot/`flue_*` se difieren a Fase 1 (no hay agente/workflow que permita compilar en Fase 0). Aquí solo se confirma que `migrate` (Step 1) dejó las 15 tablas de dominio:
 ```bash
-npm run build
-set -a; source .env; set +a
-node dist/server.mjs
-```
-En otra terminal:
-```bash
-curl -s localhost:3000/health
-```
-Expected: `/health` devuelve `{"status":"ok","mode":"sim"}`. (Puertos: producción `node dist/server.mjs` → `:3000`; `flue dev` → `:3583`. Hacer curl al puerto del modo en uso.) Al arrancar, el adapter de Flue creó las tablas `flue_*`. Verificar:
-```bash
-docker compose exec postgres psql -U user -d kairos -c "\dt flue_*"
 docker compose exec postgres psql -U user -d kairos -c "\dt kairos.*"
 ```
-Expected: existen tablas `flue_*` y las 15 tablas del esquema `kairos`. Detener el server (Ctrl+C).
+Expected: existen las 15 tablas del esquema `kairos`. (Las `flue_*` las creará el adapter en el primer boot del server, ya en Fase 1.)
 
-- [ ] **Step 5: Crear el `Dockerfile` del servicio**
+- [ ] **Step 5: Actualizar el `README.md` con el flujo de arranque de Fase 0**
 
-```dockerfile
-# Servicio Node long-running de Kairos (Flue Node target). Node ≥ 22.19 (engines de Flue).
-FROM node:22.19-slim
+Añadir una sección "Arranque local (Fase 0)" con: `docker compose up -d` → `npm install` → `npm run migrate` → `npm test`. Anotar que `flue dev`/`flue build`, el boot del server (`/health`, `flue_*`) y el `Dockerfile` llegan en **Fase 1** (cuando exista el primer workflow), porque Flue exige ≥1 agente/workflow para compilar. Mantener el resto del README intacto (cambio quirúrgico).
 
-WORKDIR /app
-
-COPY package.json package-lock.json ./
-# Fase 0: instala todas las deps (flue build necesita devDeps). Optimización futura: multi-stage + --omit=dev.
-RUN npm ci
-
-COPY . .
-RUN npm run build
-
-ENV NODE_ENV=production
-EXPOSE 3000
-CMD ["node", "dist/server.mjs"]
-```
-
-- [ ] **Step 6: Actualizar el `README.md` con el flujo de arranque de Fase 0**
-
-Añadir una sección "Arranque local (Fase 0)" con: `docker compose up -d` → `npm install` → `npm run migrate` → `npm run dev` (`:3583`) o `npm run build && npm start` (`:3000`), y `npm test` para la suite. Incluir la **nota de migración en producción**: el contenedor (`Dockerfile`) **no** corre `migrate` al arrancar — el esquema `kairos` debe migrarse con `npm run migrate` (o un init-container/entrypoint) antes del primer boot; Flue migra sus `flue_*` automáticamente. Mantener el resto del README intacto (cambio quirúrgico).
-
-- [ ] **Step 7: Commit de cierre de fase**
+- [ ] **Step 6: Commit de cierre de fase**
 
 ```bash
-git add Dockerfile README.md
-git commit -m "chore: Dockerfile del servicio y flujo de arranque de Fase 0"
+git add README.md
+git commit -m "docs: flujo de arranque local de Fase 0 en el README"
 ```
 
 ---
 
 ## Verificación de cierre de Fase 0 (criterios de éxito)
 
-- [ ] `flue build --target node` produce `dist/server.mjs` y `node dist/server.mjs` arranca.
-- [ ] `GET /health` → `{ status: 'ok', mode: 'sim' }`.
-- [ ] Postgres tiene tablas `flue_*` (Flue) y las 15 tablas del esquema `kairos` (dominio).
+- [ ] Las 15 tablas del esquema `kairos` se crean con `npm run migrate` (idempotente).
 - [ ] `orders.idempotency_key` tiene restricción `UNIQUE`.
 - [ ] Dos clientes ccxt: público sin clave; autenticado con credencial en closure y sandbox salvo `live`.
 - [ ] `send_whatsapp` postea al REST de Evolution; canal de ingreso verifica secreto, autoriza al número de control y audita.
 - [ ] `npm test` verde con cobertura ≥ 80 %; `npm run typecheck` sin errores.
-- [ ] Cero LLM, cero tools de mutación, cero dinero tocado: pura infraestructura.
+- [ ] Cero LLM, cero agentes, cero workflows, cero tools de mutación, cero dinero tocado: pura infraestructura.
+
+> **Diferido a Fase 1** (Flue exige ≥1 agente/workflow para compilar): `flue build` → `dist/server.mjs`, boot del server, `GET /health`, creación de tablas `flue_*`, y el `Dockerfile` del servicio. Se validan junto al primer workflow (el scanner de Fase 1).
 
 ## Fuera de alcance de esta fase (entra en Fase 1+)
 
