@@ -20,6 +20,7 @@
     "@flue/runtime": "^1.0.0-beta.5",
     "hono": "^4.12.27",
     "pg": "^8.22.0",
+    "ulidx": "^2.4.1",
     "valibot": "^1.4.1"
   },
   "devDependencies": {
