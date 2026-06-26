@@ -58,6 +58,7 @@ describe('executeOrderSim', () => {
     const second = await executeOrderSim({ signalId, symbol: SYMBOL, decision, riskResult: RISK_ALLOW, strategy: STRATEGY, referencePrice: 100, simParams: DEFAULT_SIM_PARAMS, mode: 'sim' });
     expect(first.status).toBe('filled');
     expect(second.status).toBe('duplicate');
+    expect(second.orderId).toBe(first.orderId);
     const after = await query<{ n: string }>(`SELECT COUNT(*) AS n FROM kairos.positions WHERE symbol = $1 AND mode = 'sim'`, [SYMBOL]);
     expect(Number(after[0].n)).toBe(Number(before[0].n) + 1);
   });

@@ -31,7 +31,10 @@ export async function executeOrderSim(p: ExecuteOrderSimParams): Promise<Executi
     const claimed = await claimEntryOrder({ idempotencyKey: idem, decisionId: p.decision.id, size, mode: p.mode }, exec);
     if (!claimed) {
       const existing = await getOrderByIdempotencyKey(idem, exec);
-      return { status: 'duplicate', idempotencyKey: idem, orderId: existing!.id, positionId: null, fillPrice: null, qty: null, fee: null };
+      if (!existing) {
+        throw new Error(`Inconsistencia: conflicto de idempotency_key "${idem}" pero la fila no existe tras el conflicto`);
+      }
+      return { status: 'duplicate', idempotencyKey: idem, orderId: existing.id, positionId: null, fillPrice: null, qty: null, fee: null };
     }
 
     const fill = simulateFill('buy', size, p.referencePrice, p.simParams);

@@ -70,7 +70,7 @@ export async function getConsecutiveLosses(
   const rows = await exec<{ realized_pnl: string }>(
     `SELECT realized_pnl FROM kairos.positions
       WHERE status = 'closed' AND mode = $1 AND strategy_id = $2
-      ORDER BY closed_at DESC`,
+      ORDER BY closed_at DESC, id DESC`,
     [mode, strategyId],
   );
   let streak = 0;
