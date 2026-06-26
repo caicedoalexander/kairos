@@ -52,6 +52,20 @@ describe('claimEntryOrder (idempotencia)', () => {
     expect((await getOrderByIdempotencyKey(key))?.status).toBe('pending');
   });
 
+  test('insertBracketLeg con mismo idempotencyKey no lanza ni duplica fila', async () => {
+    const decisionId = await seedDecision();
+    const entryKey = `${SYMBOL}:leg-idem-entry`;
+    const entry = await claimEntryOrder({ idempotencyKey: entryKey, decisionId, size: 1, mode: 'sim' });
+    const legKey = `${SYMBOL}:leg-idem`;
+    await insertBracketLeg({ idempotencyKey: legKey, decisionId, size: 1, purpose: 'sl', parentId: entry!.id, mode: 'sim' });
+    await insertBracketLeg({ idempotencyKey: legKey, decisionId, size: 1, purpose: 'sl', parentId: entry!.id, mode: 'sim' });
+    const rows = await query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM kairos.orders WHERE idempotency_key = $1`,
+      [legKey],
+    );
+    expect(rows[0].count).toBe('1');
+  });
+
   test('updateOrderStatus + insertFill + bracket legs persisten', async () => {
     const decisionId = await seedDecision();
     const key = `${SYMBOL}:e2`;

@@ -54,7 +54,8 @@ export async function insertBracketLeg(
   const id = ulid();
   await exec(
     `INSERT INTO kairos.orders (id, idempotency_key, decision_id, side, size, type, tif, purpose, parent_id, status, mode)
-     VALUES ($1, $2, $3, 'sell', $4, $5, NULL, $6, $7, 'pending', $8)`,
+     VALUES ($1, $2, $3, 'sell', $4, $5, NULL, $6, $7, 'pending', $8)
+     ON CONFLICT (idempotency_key) DO NOTHING`,
     [id, leg.idempotencyKey, leg.decisionId, leg.size, legType(leg.purpose), leg.purpose, leg.parentId, leg.mode],
   );
   return id;
