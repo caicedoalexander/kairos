@@ -17,14 +17,25 @@ const TRIGGER_CONFIG = {
     ],
   },
 };
-const RISK_PARAMS = { risk_per_trade_pct: 0.5, atr_stop_mult: 1.5, max_notional_pct: 10 };
+const RISK_PARAMS = {
+  risk_per_trade_pct: 0.5,
+  atr_stop_mult: 1.5,
+  tp_r_multiple: 2.0,
+  max_notional_pct: 10,
+  max_total_exposure_pct: 30,
+  max_open_positions: 3,
+  max_symbol_exposure_pct: 15,
+  max_daily_loss_pct: 3,
+  max_drawdown_pct: 15,
+  max_consecutive_losses: 4,
+};
 
 // Siembra la estrategia semilla pullback-alcista (§16.3). Idempotente: refresca config si ya existe.
 export async function seedStrategies(): Promise<void> {
   const { query } = await import('./pool.ts');
   await query(
     `INSERT INTO kairos.strategies (id, enabled, timeframe, symbols, trigger_config, risk_params, version)
-     VALUES ($1, true, '15m', $2::text[], $3, $4, 1)
+     VALUES ($1, true, '15m', $2::text[], $3, $4, 2)
      ON CONFLICT (id) DO UPDATE
        SET trigger_config = EXCLUDED.trigger_config,
            risk_params    = EXCLUDED.risk_params,
