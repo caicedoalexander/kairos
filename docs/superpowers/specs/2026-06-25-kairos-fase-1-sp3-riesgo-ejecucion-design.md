@@ -81,10 +81,16 @@ src/db/repositories/
   positions.ts          openPosition(p), closePosition(id, exit, realizedPnl, closedAt),
                         getOpenPositions(mode) [+ agregados de exposición], getConsecutiveLosses(mode)
   account-snapshots.ts  getLatestSnapshot(), appendSnapshot(s), ensureInitialSnapshot(startingEquity)
-src/db/seed-strategies.ts   (modificar: extender RISK_PARAMS)
+src/db/pool.ts              (modificar: añadir withTransaction + tipo Executor — ver §10.1)
+src/db/seed-strategies.ts   (modificar: extender RISK_PARAMS + bump de version — ver §12)
+src/db/repositories/audit-log.ts  (modificar: appendAuditLog acepta executor opcional — ver §10.1)
 ```
 
-`audit_log` reutiliza el repo existente `src/db/repositories/audit-log.ts` (no se crea uno nuevo).
+`audit_log` reutiliza el repo existente `src/db/repositories/audit-log.ts` (`appendAuditLog`, no se
+crea uno nuevo). **Nota de integración (verificada contra el código mergeado):** `Signal`
+(`src/lib/scanner/types.ts`) **no** lleva `id`; el id ULID lo genera y devuelve `insertSignal`
+(`signals.ts`), y `scanSymbol` lo retorna como `string`. Por tanto el `signalId` fluye por el
+pipeline como **parámetro explícito** (`string`), nunca como `signal.id`.
 
 ## 4. Tipos e interfaces (Valibot)
 
@@ -183,10 +189,12 @@ tp            = entry + rp.tp_r_multiple * stop_distance
 return { action: 'enter', entry, sl, tp, sizingFactor: 1.0 }
 ```
 
-El veredicto se persiste en `decisions`: `{ id: ulid(), signal_id: signal.id, verdict: <Verdict>,
-reasoning: null, technical_read: null, fundamental_read: null, model_used: 'deterministic',
-tokens: 0 }`. **Nota de integración:** `signal.id` debe existir; el productor se invoca sobre una
-señal ya persistida por SP2 (`insertSignal`).
+`buildDeterministicVerdict` es **puro** (solo lee el snapshot) y no necesita el id. La persistencia
+del veredicto es un paso aparte, `persistDecision(signalId: string, verdict: Verdict)`, que inserta en
+`decisions`: `{ id: ulid(), signal_id: signalId, verdict: <Verdict>, reasoning: null,
+technical_read: null, fundamental_read: null, model_used: 'deterministic', tokens: 0 }` y devuelve
+`{ id, verdict }`. **`signalId` es el `string` devuelto por `insertSignal`/`scanSymbol`** (la `Signal`
+en memoria no lleva id); se pasa explícitamente, no se lee de `signal.id`.
 
 ## 6. Sizing (`sizing.ts`)
 
@@ -315,11 +323,13 @@ realizedPnl, closedAt)` + `appendSnapshot(...)` con la nueva equity realizada.
 
 ## 10. execute_order en sim (`execute-order.ts`)
 
-Firma (objeto de opciones para legibilidad):
+Firma (objeto de opciones para legibilidad). **`signalId` y `symbol` se pasan explícitos** (la
+`Signal` no lleva id; ver §3):
 
 ```ts
 interface ExecuteOrderSimParams {
-  signal: Signal;          // aporta symbol e id (= idempotency_key)
+  signalId: string;        // = idempotency_key (string devuelto por insertSignal/scanSymbol)
+  symbol: string;
   decision: { id: string; verdict: Verdict };
   riskResult: RiskResult;  // result 'allow', con adjustedSize
   strategy: Strategy;      // aporta strategy_id
@@ -330,49 +340,95 @@ interface ExecuteOrderSimParams {
 ```
 
 `executeOrderSim(p: ExecuteOrderSimParams): Promise<ExecutionResult>` — orquestador determinista e
-**idempotente**. Todo en una **transacción** pg.
+**idempotente**. Todo el bloque corre en **una transacción** vía `withTransaction` (§10.1); cada repo
+recibe el `exec` transaccional.
 
 ```
-idem = p.signal.id        // §18.3: idempotency_key = signalId
+idem = p.signalId        // §18.3: idempotency_key = signalId
 
-BEGIN
+return withTransaction(async (exec) => {
   // 1. Claim: INSERT entry order ON CONFLICT (idempotency_key) DO NOTHING RETURNING id
   claimed = claimEntryOrder({ id: ulid(), idempotency_key: idem, decision_id: p.decision.id,
                               side: 'buy', size: p.riskResult.adjustedSize, type: 'limit',
-                              tif: 'IOC', purpose: 'entry', status: 'pending', mode: p.mode })
+                              tif: 'IOC', purpose: 'entry', status: 'pending', mode: p.mode }, exec)
   if (!claimed) {
     // Ya existía → replay idempotente: devuelve el resultado existente, sin duplicar.
-    existing = getOrderByIdempotencyKey(idem)
-    COMMIT
-    return { status: 'duplicate', ... derivado de existing }
+    existing = getOrderByIdempotencyKey(idem, exec)
+    return { status: 'duplicate', orderId: existing.id, ... derivado de existing }
   }
 
   // 2. Fill paramétrico (precio peor que mid).
   fill = simulateFill('buy', p.riskResult.adjustedSize, p.referencePrice, p.simParams)
 
   // 3. Persistir fill + abrir posición + marcar la entry como filled.
-  insertFill({ id: ulid(), order_id: claimed.id, price: fill.fillPrice, qty: fill.qty, fee: fill.fee })
-  positionId = openPosition({ id: ulid(), symbol: p.signal.symbol, side: 'long', entry: fill.fillPrice,
+  insertFill({ id: ulid(), order_id: claimed.id, price: fill.fillPrice, qty: fill.qty, fee: fill.fee }, exec)
+  positionId = openPosition({ id: ulid(), symbol: p.symbol, side: 'long', entry: fill.fillPrice,
                               size: fill.qty, sl: p.decision.verdict.sl, tp: p.decision.verdict.tp,
-                              status: 'open', strategy_id: p.strategy.id, mode: p.mode })
-  updateOrderStatus(claimed.id, 'filled')
+                              status: 'open', strategy_id: p.strategy.id, mode: p.mode }, exec)
+  updateOrderStatus(claimed.id, 'filled', exec)
 
   // 4. Registrar legs OCO (no se "ejecutan" aún; los resuelve resolveBracket).
-  insertBracketLeg({ idempotency_key: `${idem}:sl`, purpose: 'sl', parent_id: claimed.id, ... })
-  insertBracketLeg({ idempotency_key: `${idem}:tp`, purpose: 'tp', parent_id: claimed.id, ... })
+  //    En sim parent_id = id de la entry order (no hay orderListId del exchange; ver invariantes).
+  insertBracketLeg({ idempotency_key: `${idem}:sl`, side: 'sell', size: fill.qty, purpose: 'sl',
+                     parent_id: claimed.id, decision_id: p.decision.id, mode: p.mode }, exec)
+  insertBracketLeg({ idempotency_key: `${idem}:tp`, side: 'sell', size: fill.qty, purpose: 'tp',
+                     parent_id: claimed.id, decision_id: p.decision.id, mode: p.mode }, exec)
 
-  // 5. Auditoría.
-  insertAuditLog({ event_type: 'order_filled_sim', actor: 'execute_order', payload: {...} })
-COMMIT
-return { status: 'filled', idempotencyKey: idem, orderId: claimed.id, positionId,
-         fillPrice: fill.fillPrice, qty: fill.qty, fee: fill.fee }
+  // 5. Auditoría (repo existente, camelCase).
+  appendAuditLog({ eventType: 'order_filled_sim', actor: 'execute_order',
+                   payload: { idem, positionId, fillPrice: fill.fillPrice, qty: fill.qty } }, exec)
+
+  return { status: 'filled', idempotencyKey: idem, orderId: claimed.id, positionId,
+           fillPrice: fill.fillPrice, qty: fill.qty, fee: fill.fee }
+})
 ```
+
+> **Validación de columnas (al planificar):** `claimEntryOrder`/`insertBracketLeg` solo insertan
+> columnas que existen en `kairos.orders` (`id, idempotency_key, decision_id, side, size, type, tif,
+> purpose, parent_id, status, exchange_order_id, mode`). `symbol` y `strategy_id` **no** están en
+> `orders` — viven solo en `positions`. No inventar columnas.
+
+### 10.1 Primitiva de transacción de dominio (entregable de SP3)
+
+Hoy los repos usan el helper `query()` de `src/db/pool.ts`, que ejecuta contra `pool` directamente
+(autocommit por llamada): **no hay forma de agrupar varios INSERT en una transacción de dominio**. Un
+crash entre `openPosition` y `insertBracketLeg` dejaría una posición sin sus legs OCO. SP3 añade la
+primitiva:
+
+```ts
+// src/db/pool.ts (añadir)
+export type Executor = <T = Record<string, unknown>>(text: string, params?: QueryParam[]) => Promise<T[]>;
+
+export async function withTransaction<T>(fn: (exec: Executor) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const exec: Executor = async (text, params) => (await client.query(text, params ?? [])).rows;
+    const out = await fn(exec);
+    await client.query('COMMIT');
+    return out;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+```
+
+Los repos de SP3 (`orders`/`fills`/`positions`/`account-snapshots`) y el `appendAuditLog` existente
+aceptan un **executor opcional** `exec: Executor = query` (default = autocommit, preserva el
+comportamiento actual). Dentro de `executeOrderSim` se pasa el `exec` transaccional; fuera de una
+transacción se omite. Cambio aditivo, no rompe a los consumidores actuales.
 
 **Invariantes (§18.3) que aplican en sim:**
 - **Claim antes del fill:** el `INSERT orders` (UNIQUE) ocurre antes de simular el llenado. Reintentar
   nunca duplica (segunda llamada → `duplicate`).
 - **Size real desde el fill:** la posición y los legs usan el `qty` llenado, no el size pedido.
 - **Sin hueco entrada→OCO en sim:** todo en proceso, una transacción.
+- **`parent_id` del leg OCO en sim = id de la entry order.** §18.3 lo liga al `orderListId` del
+  exchange; en sim no existe, así que se usa el id de la entry order. Simplificación sim explícita
+  (el reconciler/monitor de SP4/SP5 debe conocerla).
 - **Incertidumbre de ejecución:** en sim el fill es síncrono y determinista → no surge
   `pending_execution`; el estado existe en el tipo por paridad con live (SP5), donde sí aplica.
 - **El lock Redis (claim multi-worker) se difiere a SP5;** en sim el `UNIQUE` de DB es el guard
@@ -383,8 +439,16 @@ return { status: 'filled', idempotencyKey: idem, orderId: claimed.id, positionId
 - **Equity realizada (simplificación Fase 1):** `equity = SIM_STARTING_EQUITY + Σ realized_pnl`.
   Abrir posición **no** cambia equity; bloquea `notional` como exposición usada (los caps la suman de
   `positions`). Cerrar realiza P&L → `appendSnapshot` recalcula `peak_equity = max(peak_prev, equity)`,
-  `drawdown = (peak_equity − equity)/peak_equity · 100`, `daily_pnl = Σ realized_pnl desde 00:00 UTC`.
-  El **mark-to-market** (equity no realizada barra a barra) se difiere a SP4.
+  `drawdown = (peak_equity − equity)/peak_equity · 100`. El **`daily_pnl` se deriva por query**
+  (`SELECT COALESCE(Σ realized_pnl,0) FROM kairos.positions WHERE mode=$1 AND closed_at >= date_trunc('day', now() AT TIME ZONE 'UTC')`),
+  **no** se acumula en el snapshot — así no hace falta lógica de rollover de medianoche sobre una tabla
+  append-only. El **mark-to-market** (equity no realizada barra a barra) se difiere a SP4.
+- **Alcance del cierre en SP3:** SP3 **no conduce** `resolveBracket` barra a barra (eso es SP4/SP5,
+  Decisión 2). En el flujo end-to-end de SP3 las posiciones se **abren** pero solo se **cierran** en el
+  test de integración (que invoca `resolveBracket` con una vela construida). Consecuencia esperada: en
+  SP3 `drawdown`/`daily_pnl`/`consecutiveLosses` quedan en su valor de arranque (0) durante la
+  operación, así que los **deny-gates 1–3 de `evaluateRisk` (§7.1) solo se ejercitan vía unit test de
+  `evaluateRisk`**, no en integración. No es un defecto; es el alcance.
 - **Snapshot inicial:** `ensureInitialSnapshot(startingEquity)` siembra el primer `account_snapshots`
   (`equity = peak_equity = SIM_STARTING_EQUITY`, `drawdown = 0`, `daily_pnl = 0`) si no hay ninguno.
   `SIM_STARTING_EQUITY` por env (default `10000`).
@@ -395,8 +459,10 @@ return { status: 'filled', idempotencyKey: idem, orderId: claimed.id, positionId
 ## 12. Seed: extensión de `risk_params`
 
 `seed-strategies.ts` actualiza `RISK_PARAMS` de `pullback-alcista` para incluir todos los campos que
-`check_risk` consume (el `ON CONFLICT DO UPDATE` ya refresca `risk_params`). Valores iniciales
-conservadores:
+`check_risk` consume (el `ON CONFLICT DO UPDATE` ya refresca `risk_params`). **Como cambia la config de
+riesgo de la estrategia, se incrementa `version` a `2`** (el `INSERT` y el `UPDATE` deben fijar
+`version=2`): `strategies.version` es parte de la identidad reproducible de un backtest (§20.4), así que
+un cambio de parámetros sin bump rompería esa identidad en SP4. Valores iniciales conservadores:
 
 ```ts
 const RISK_PARAMS = {
@@ -419,7 +485,7 @@ const RISK_PARAMS = {
   `SimParamsSchema`, `RiskResultSchema`.
 - **Defensivo:** `buildDeterministicVerdict` devuelve `action:'skip'` sin entry/atr válidos; `computeSize`
   opera sobre `stop_distance > 0` (garantizado por veredicto `'enter'`). Sin divisiones por cero.
-- **Idempotencia testeada:** doble `executeOrderSim` con el mismo `signal.id` ⇒ una sola posición y una
+- **Idempotencia testeada:** doble `executeOrderSim` con el mismo `signalId` ⇒ una sola posición y una
   sola entry order; el segundo devuelve `status:'duplicate'`.
 - **Honestidad testeada:** `simulateFill('buy', …)` ⇒ `fillPrice > referencePrice`; `('sell', …)` ⇒
   `fillPrice < referencePrice`; `fee > 0` siempre.
@@ -439,13 +505,15 @@ const RISK_PARAMS = {
 ## 14. Orden de implementación (resumen para el plan)
 
 1. `types.ts` + `limits.ts` (schemas/constantes, base de todo).
-2. `verdict.ts` + repo `decisions.ts`.
-3. `sizing.ts`.
-4. `check-risk.ts` (`evaluateRisk` puro) + repo `risk-evaluations.ts`.
-5. `fill.ts`.
-6. `bracket.ts`.
-7. Repos `orders.ts` / `fills.ts` / `positions.ts` / `account-snapshots.ts`.
-8. `execute-order.ts` (orquestador idempotente, transaccional).
-9. `checkRiskForDecision` wrapper (integra repos + `evaluateRisk`).
-10. Extensión del seed `risk_params` + parseo Valibot al leer estrategia.
-11. Integración end-to-end (signal→…→cierre) con símbolo dedicado.
+2. `pool.ts`: `withTransaction` + tipo `Executor` (primitiva de transacción de dominio, §10.1).
+3. `verdict.ts` (`buildDeterministicVerdict` puro) + repo `decisions.ts` (`insertDecision`/`persistDecision`).
+4. `sizing.ts`.
+5. `check-risk.ts` (`evaluateRisk` puro) + repo `risk-evaluations.ts`.
+6. `fill.ts`.
+7. `bracket.ts`.
+8. Repos `orders.ts` / `fills.ts` / `positions.ts` / `account-snapshots.ts` (con executor opcional) +
+   añadir executor opcional a `appendAuditLog`.
+9. `execute-order.ts` (orquestador idempotente, transaccional vía `withTransaction`).
+10. `checkRiskForDecision` wrapper (integra repos + `evaluateRisk`).
+11. Extensión del seed `risk_params` + bump de `version` + parseo Valibot al leer estrategia.
+12. Integración end-to-end (signal→…→cierre) con símbolo dedicado.
