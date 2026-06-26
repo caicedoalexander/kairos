@@ -1,6 +1,12 @@
 import { computeSize } from './sizing.ts';
-import { MIN_NOTIONAL } from './limits.ts';
-import type { RiskInput, RiskResult } from './types.ts';
+import { MIN_NOTIONAL, DEFAULT_SIM_STARTING_EQUITY } from './limits.ts';
+import { parseRiskParams } from './types.ts';
+import type { RiskInput, RiskResult, Verdict } from './types.ts';
+import { getExposure, getConsecutiveLosses, getDailyRealizedPnl } from '../../db/repositories/positions.ts';
+import { getLatestSnapshot } from '../../db/repositories/account-snapshots.ts';
+import { insertRiskEvaluation } from '../../db/repositories/risk-evaluations.ts';
+import type { Strategy } from '../scanner/types.ts';
+import type { TradingMode } from '../mode.ts';
 
 function deny(reason: string, snap: Record<string, unknown>): RiskResult {
   return { result: 'deny', reason, adjustedSize: null, notional: null, limitsSnapshot: snap };
@@ -38,4 +44,45 @@ export function evaluateRisk(input: RiskInput): RiskResult {
   if (notional < MIN_NOTIONAL) return deny('notional bajo el mínimo', snap);
 
   return { result: 'allow', reason: 'ok', adjustedSize: size, notional, limitsSnapshot: { ...snap, adjustedSize: size, notional } };
+}
+
+export interface GatheredState {
+  equity: number; drawdownPct: number; dailyPnl: number;
+  openNotionalTotal: number; openNotionalSymbol: number; openPositionsCount: number;
+  consecutiveLosses: number;
+}
+
+export interface CheckRiskArgs {
+  decision: { id: string; verdict: Verdict };
+  strategy: Strategy;
+  symbol: string;
+  mode: TradingMode;
+}
+
+async function gatherState(args: CheckRiskArgs): Promise<GatheredState> {
+  const snap = await getLatestSnapshot();
+  const exposure = await getExposure(args.mode, args.symbol);
+  const consecutiveLosses = await getConsecutiveLosses(args.mode, args.strategy.id);
+  const dailyPnl = await getDailyRealizedPnl(args.mode);
+  return {
+    equity: snap?.equity ?? DEFAULT_SIM_STARTING_EQUITY,
+    drawdownPct: snap?.drawdown ?? 0,
+    dailyPnl,
+    openNotionalTotal: exposure.openNotionalTotal,
+    openNotionalSymbol: exposure.openNotionalSymbol,
+    openPositionsCount: exposure.openPositionsCount,
+    consecutiveLosses,
+  };
+}
+
+// Wrapper DB de check_risk: reúne el estado (o lo recibe inyectado en tests), evalúa y persiste.
+export async function checkRiskForDecision(args: CheckRiskArgs, injected?: GatheredState): Promise<RiskResult> {
+  const state = injected ?? (await gatherState(args));
+  const result = evaluateRisk({
+    verdict: args.decision.verdict,
+    riskParams: parseRiskParams(args.strategy.riskParams),
+    ...state,
+  });
+  await insertRiskEvaluation(args.decision.id, result);
+  return result;
 }
