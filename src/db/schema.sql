@@ -169,14 +169,19 @@ CREATE TABLE IF NOT EXISTS kairos.liquidations (
 );
 CREATE INDEX IF NOT EXISTS liquidations_symbol_ts_idx ON kairos.liquidations (symbol, ts DESC);
 
--- Resultado reproducible de un backtest (§20).
+-- Resultado reproducible de un backtest (§20). symbol/trades añadidos en SP4.
 CREATE TABLE IF NOT EXISTS kairos.backtest_runs (
   id               text PRIMARY KEY,
   strategy_id      text NOT NULL REFERENCES kairos.strategies(id),
   strategy_version integer NOT NULL,
+  symbol           text,
   "window"         tstzrange,
   mode             text NOT NULL CHECK (mode IN ('det', 'llm')),
   sim_params       jsonb NOT NULL,
   metrics          jsonb NOT NULL,
+  trades           jsonb NOT NULL DEFAULT '[]'::jsonb,
   created_at       timestamptz NOT NULL DEFAULT now()
 );
+-- Idempotente para DBs migradas antes de SP4 (CREATE IF NOT EXISTS no altera columnas existentes).
+ALTER TABLE kairos.backtest_runs ADD COLUMN IF NOT EXISTS symbol text;
+ALTER TABLE kairos.backtest_runs ADD COLUMN IF NOT EXISTS trades jsonb NOT NULL DEFAULT '[]'::jsonb;
