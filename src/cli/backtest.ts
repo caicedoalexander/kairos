@@ -1,13 +1,14 @@
 import * as v from 'valibot';
+import { pathToFileURL } from 'node:url';
 import { runBacktest } from '../lib/backtest/run-backtest.ts';
 import type { BacktestResult } from '../lib/backtest/types.ts';
 
 const ArgsSchema = v.object({
   strategy: v.string(),
-  symbol: v.array(v.string()),
+  symbol: v.pipe(v.array(v.string()), v.minLength(1, 'Debes indicar al menos un --symbol')),
   from: v.pipe(v.string(), v.isoTimestamp()),
   to: v.pipe(v.string(), v.isoTimestamp()),
-  equity: v.optional(v.number()),
+  equity: v.optional(v.pipe(v.number(), v.finite())),
 });
 
 // Parseo simple de --clave valor (--symbol repetible).
@@ -45,9 +46,9 @@ export async function main(argv: readonly string[]): Promise<void> {
   }
 }
 
-// v8 ignore next 12 — bloque de arranque CLI; se valida ejecutando `npm run backtest`.
+// v8 ignore next 14 — bloque de arranque CLI; se valida ejecutando `npm run backtest`.
 const invokedDirectly =
-  process.argv[1] !== undefined && import.meta.url === (await import('node:url')).pathToFileURL(process.argv[1]).href;
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (invokedDirectly) {
   await import('dotenv/config');
