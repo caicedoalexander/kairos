@@ -13,6 +13,7 @@
     "migrate": "node --experimental-strip-types src/db/migrate.ts",
     "seed": "node --experimental-strip-types src/db/seed-strategies.ts",
     "backfill": "node --experimental-strip-types src/lib/market-data/backfill.ts",
+    "backtest": "node --experimental-strip-types src/cli/backtest.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
