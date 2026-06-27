@@ -883,7 +883,7 @@ git commit -m "feat: data-source point-in-time del backtester (ventana deslizant
 
 - [ ] **Step 1: Escribir el test (failing)**
 
-El test usa un `BacktestDataSource` **falso en memoria** (sin DB) para controlar las barras exactas y forzar una señal. Para forzar `scan` a disparar sin construir 300 velas reales, usamos una estrategia con `entry: { all: [] }` (un `all` vacío evalúa verdadero) y reglas MTF permisivas, y un `closedCandlesAt` que devuelve velas reales suficientes. Para mantener el test puro y determinista, se inyecta un fake que devuelve velas planas y se verifica el comportamiento del **driver** (no de `scan`): probamos las mecánicas de entrada/salida con una señal forzada vía un fake de `scan` no es posible (import estático), así que el test del driver se centra en SL-primero, fill-a-barra-siguiente y eod usando una estrategia que SÍ dispara con velas sembradas mínimas.
+El test usa un `BacktestDataSource` **falso en memoria** (sin DB). El fake entrega un snapshot bullish fijo de 260 velas por TF (>`REQUIRED_WARMUP`=200) en `closedCandlesAt` para que `scan` **dispare** (emaStack bullish + `entry: { all: [] }` verdadero + `allow_counter: true`), y barras trigger **crafted** que continúan la escala de precios del snapshot para forzar de forma determinista: (a) fill al open de la barra siguiente + SL primero, y (b) cierre end-of-data. Esto cubre los 4 invariantes de §3.3 sin depender de la DB.
 
 `src/lib/backtest/replay-driver.test.ts`:
 
@@ -895,50 +895,85 @@ import type { Strategy, CandlesByTimeframe, Candle } from '../scanner/types.ts';
 
 const SYMBOL = 'RPL/USDT';
 const TRIGGER_MS = 900_000; // 15m
+const SIM = { spread_bps: 4, slippage_bps: 5, fee_bps: 10 };
+const SNAP_N = 260;                 // > REQUIRED_WARMUP (200)
+const B0 = SNAP_N * TRIGGER_MS;     // openTime de la primera barra trigger de ejecución
 
-// Estrategia mínima: entry `all: []` (verdadero) + sin skip + sin gate MTF estricto.
 const STRATEGY: Strategy = {
   id: 'rpl-strategy', enabled: true, symbols: [SYMBOL],
   triggerConfig: { timeframes: { bias: '4h', context: '1h', trigger: '15m' }, entry: { all: [] }, allow_counter: true },
-  riskParams: { risk_per_trade_pct: 1, atr_stop_mult: 1, tp_r_multiple: 2, max_notional_pct: 100, max_total_exposure_pct: 100, max_open_positions: 3, max_symbol_exposure_pct: 100, max_daily_loss_pct: 50, max_drawdown_pct: 90, max_consecutive_losses: 99 },
+  riskParams: { risk_per_trade_pct: 1, atr_stop_mult: 1.5, tp_r_multiple: 2, max_notional_pct: 100, max_total_exposure_pct: 100, max_open_positions: 3, max_symbol_exposure_pct: 100, max_daily_loss_pct: 50, max_drawdown_pct: 90, max_consecutive_losses: 99 },
   version: 1, skillName: null,
 };
 
-// Vela trigger con OHLC explícito.
 function bar(openMs: number, o: number, h: number, l: number, c: number): Candle {
-  return { symbol: SYMBOL, timeframe: '15m', openTime: new Date(openMs), o, h, l, c, v: 1 };
+  return { symbol: SYMBOL, timeframe: '15m', openTime: new Date(openMs), o, h, l, c, v: 100 };
 }
 
-// Fake data-source: scan recibe `null` deriv y velas que produce una señal SOLO en la barra `signalAt`.
-// Para aislar el driver de scan, devolvemos candlesByTf vacío salvo en signalAt, donde devolvemos
-// un set de velas que `scan` puede evaluar. (Ver helper buildScannableCandles abajo.)
-function fakeDs(bars: Candle[], scannableAt: number, scannable: CandlesByTimeframe): BacktestDataSource {
+// 260 velas bullish suaves (close 50 → 101.8) → emaStack bullish + ATR>0. Misma serie para los 3 TFs.
+function bullish(tf: string): Candle[] {
+  return Array.from({ length: SNAP_N }, (_, k) => {
+    const c = 50 + k * 0.2;
+    return { symbol: SYMBOL, timeframe: tf, openTime: new Date(k * TRIGGER_MS), o: c - 0.1, h: c + 0.4, l: c - 0.4, c, v: 100 };
+  });
+}
+const SCANNABLE: CandlesByTimeframe = { '4h': bullish('4h'), '1h': bullish('1h'), '15m': bullish('15m') };
+
+// closedCandlesAt SIEMPRE devuelve el snapshot bullish → scan dispara cuando no hay posición ni pending.
+function signalDs(bars: Candle[]): BacktestDataSource {
   return {
     triggerCandles: bars,
     closeTimeAt: (i) => new Date(bars[i].openTime.getTime() + TRIGGER_MS),
-    closedCandlesAt: (i) => (i === scannableAt ? scannable : { '4h': [], '1h': [], '15m': [] }),
+    closedCandlesAt: () => SCANNABLE,
     derivativesAt: () => ({ fundingZ: null, oiChangePct: null }),
   };
 }
-```
 
-Dado que construir un `scannable` que haga disparar a `scan` requiere ≥200 velas válidas por TF con indicadores, el **test del driver** usa en su lugar el camino real sembrado en Task 6 (integración). Aquí probamos las invariantes mecánicas con una **señal ya materializada**: exponemos un hook de test mínimo. Para no añadir hooks de test a producción, el test del driver verifica los caminos que NO dependen de `scan`:
-
-```ts
-describe('replay-driver — mecánica sin señal', () => {
-  test('sin señales (closedCandlesAt vacío) → 0 trades y equity curve plana', () => {
+describe('replay-driver', () => {
+  test('sin señales (closedCandlesAt vacío) → 0 trades y equity plana', () => {
     const bars = [bar(0, 100, 101, 99, 100), bar(TRIGGER_MS, 100, 101, 99, 100)];
-    const ds = fakeDs(bars, -1, { '4h': [], '1h': [], '15m': [] });
-    const out = runReplay(STRATEGY, SYMBOL, ds, { startingEquity: 10000, simParams: { spread_bps: 4, slippage_bps: 5, fee_bps: 10 } });
+    const flatDs: BacktestDataSource = {
+      triggerCandles: bars,
+      closeTimeAt: (i) => new Date(bars[i].openTime.getTime() + TRIGGER_MS),
+      closedCandlesAt: () => ({ '4h': [], '1h': [], '15m': [] }),
+      derivativesAt: () => ({ fundingZ: null, oiChangePct: null }),
+    };
+    const out = runReplay(STRATEGY, SYMBOL, flatDs, { startingEquity: 10000, simParams: SIM });
     expect(out.trades).toHaveLength(0);
     expect(out.equityCurve).toHaveLength(2);
     expect(out.equityCurve[0].equity).toBe(10000);
     expect(out.finalLedger.open).toBeNull();
   });
+
+  test('señal en bar0 → entrada al open de bar1 → SL primero (low fuerza el stop)', () => {
+    // bar0: dispara señal (verdict ancla ~101.8 del snapshot). bar1: entrada al open=101.8; low=2 ≤ sl.
+    const bars = [
+      bar(B0, 101.8, 101.85, 101.75, 101.8),
+      bar(B0 + TRIGGER_MS, 101.8, 101.85, 2, 50),
+    ];
+    const out = runReplay(STRATEGY, SYMBOL, signalDs(bars), { startingEquity: 10000, simParams: SIM });
+    expect(out.trades).toHaveLength(1);                 // si es 0, el snapshot no disparó scan → ajustar la serie
+    expect(out.trades[0].hitType).toBe('sl');
+    expect(out.trades[0].entry).toBeGreaterThan(101.8); // fill peor que el open por slippage de compra
+    expect(out.trades[0].rMultiple).toBeLessThan(0);
+    expect(out.finalLedger.open).toBeNull();
+  });
+
+  test('posición abierta al final → cierre end-of-data al último close', () => {
+    // bar1 (range estrecho en torno al entry) no toca SL ni TP → queda abierta → eod al close.
+    const bars = [
+      bar(B0, 101.8, 101.85, 101.75, 101.8),
+      bar(B0 + TRIGGER_MS, 101.8, 101.85, 101.75, 101.82),
+    ];
+    const out = runReplay(STRATEGY, SYMBOL, signalDs(bars), { startingEquity: 10000, simParams: SIM });
+    expect(out.trades).toHaveLength(1);
+    expect(out.trades[0].hitType).toBe('eod');
+    expect(out.trades[0].exit).toBeCloseTo(101.82, 6);
+  });
 });
 ```
 
-> La cobertura de los caminos con señal (fill-a-barra-siguiente, SL-primero, eod, reproducibilidad) se hace **end-to-end en Task 6** con histórico sembrado real que dispara `scan`. Esto evita duplicar la maquinaria de `scan` en un fake frágil. El driver se mantiene <50 líneas y sin ramas no testeadas salvo las cubiertas por Task 6.
+> Los precios de las barras trigger continúan la escala del snapshot (~101.8) para que `sl`/`tp` derivados por `buildDeterministicVerdict` sean coherentes con ellas. Si el test SL reporta 0 trades, el snapshot bullish no disparó `scan`: subir la pendiente o el nº de velas (mismo signo que la guía de Task 6). La reproducibilidad se verifica end-to-end en Task 6.
 
 - [ ] **Step 2: Run test → FAIL**
 
@@ -1030,7 +1065,7 @@ export function runReplay(strategy: Strategy, symbol: string, ds: BacktestDataSo
 - [ ] **Step 4: Run test → PASS**
 
 Run: `npx vitest run src/lib/backtest/replay-driver.test.ts`
-Expected: PASS (1 test).
+Expected: PASS (3 tests: sin-señal, SL-primero, eod).
 
 - [ ] **Step 5: Typecheck + commit**
 
@@ -1095,9 +1130,9 @@ beforeAll(async () => {
     [STRATEGY_ID, `{${SYMBOL}}`, JSON.stringify(TRIGGER_CONFIG), JSON.stringify(RISK)],
   );
   for (const tf of ['15m', '1h', '4h']) {
-    const preMs = 360; // > LOOKBACK
-    const startMs = WINDOW_FROM.getTime() - preMs * TF_MS[tf];
-    const total = preMs + Math.ceil((WINDOW_TO.getTime() - WINDOW_FROM.getTime()) / TF_MS[tf]) + 2;
+    const preBars = 360; // > LOOKBACK
+    const startMs = WINDOW_FROM.getTime() - preBars * TF_MS[tf];
+    const total = preBars + Math.ceil((WINDOW_TO.getTime() - WINDOW_FROM.getTime()) / TF_MS[tf]) + 2;
     await upsertCandles(gen(tf, startMs, total, 100, 0.5));
   }
 });
@@ -1168,9 +1203,12 @@ export async function runBacktest(cfg: BacktestConfig): Promise<BacktestResult> 
 
   const first = ds.triggerCandles[0];
   const last = ds.triggerCandles[ds.triggerCandles.length - 1];
+  // Buy&hold con las mismas fees de sim (spec §3.4): comprar al open inicial, vender al close final.
+  const bhFee = simParams.fee_bps / 1e4;
   const metrics = computeMetrics({
     trades, equityCurve, startingEquity,
-    buyHold: { entryPrice: first.o, exitPrice: last.c }, window: cfg.window,
+    buyHold: { entryPrice: first.o * (1 + bhFee), exitPrice: last.c * (1 - bhFee) },
+    window: cfg.window,
   });
 
   const runId = await insertBacktestRun({
@@ -1335,6 +1373,13 @@ Expected: toda la suite verde, incluida la de SP1–SP3.
 | §7 testing (símbolo dedicado, borde día-UTC, borde look-ahead) | Tasks 2/4/6 |
 | §8 deuda timezone → no se usa la query DB | N/A (driver usa `T` simulado; anotado) |
 
-**Decisiones de implementación notables (verificar en revisión):**
-- La cobertura de los caminos del driver **con señal** (fill-a-barra-siguiente, SL-primero, eod) recae en el test end-to-end de Task 6 (histórico sembrado real que dispara `scan`), no en un fake de `scan` en Task 5. Razón: replicar la maquinaria de indicadores de `scan` en un fake sería frágil y duplicado. Si la revisión exige un test unitario aislado del driver para SL-primero/eod, se puede añadir un test que invoque `runReplay` con un `BacktestDataSource` fake cuyo `closedCandlesAt` devuelva un set de ≥200 velas pre-construidas que disparen `scan` — coste extra aceptable, no bloqueante.
+**Decisiones de implementación notables:**
+- Los caminos del driver **con señal** (fill-a-barra-siguiente, SL-primero, eod) se cubren con tests directos de `runReplay` en Task 5 (fake data-source con snapshot bullish de 260 velas que dispara `scan` + barras crafted), **además** del end-to-end de Task 6. Incorporado tras la revisión (`kairos-plan-reviewer` H1).
+- Buy&hold descuenta las fees de sim (Task 6), por paridad con la estrategia (spec §3.4). Incorporado tras la revisión (M1).
 - `insertBacktestRun` tipa `metrics`/`trades` como `Record<string, unknown>`/`unknown[]` (Task 1) y Task 6 hace el cast desde los tipos reales — desacopla el repo del módulo `backtest`.
+
+**Deuda menor diferida (no bloqueante, de la revisión):**
+- **M2:** `applyClose` final tiene 4 params (`openedAt` explícito) vs los 3 del spec §3.2; benigno (`BracketResolution` es subtipo de `TradeClose`). El plan es la firma autoritativa.
+- **L1:** `std()` usa varianza poblacional (÷N) en vez de muestral (÷N−1); diferencia despreciable para validar el edge inicial.
+- **L2:** `markToMarket(l, markPrice)` (2 params) vs spec (3, con `T` no usado); benigno.
+- **L4:** `recoveryDays` puede reportar `null` si un DD posterior menor sigue sin recuperarse aunque el DD máximo sí; improbable en ventanas cortas. Revisar al añadir ventanas largas.
