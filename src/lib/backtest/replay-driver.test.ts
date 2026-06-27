@@ -57,13 +57,15 @@ describe('replay-driver', () => {
 
   test('señal en bar0 → entrada al open de bar1 → SL primero (low fuerza el stop)', () => {
     // bar0: dispara señal (verdict ancla ~101.8 del snapshot). bar1: entrada al open=101.8; low=2 ≤ sl.
+    // bar0.close=100.0 deliberadamente distinto de bar1.open=101.8 para detectar look-ahead.
     const bars = [
-      bar(B0, 101.8, 101.85, 101.75, 101.8),
+      bar(B0, 100.0, 101.85, 99.0, 100.0),      // close=100.0; fill NO debe usar este precio
       bar(B0 + TRIGGER_MS, 101.8, 101.85, 2, 50),
     ];
     const out = runReplay(STRATEGY, SYMBOL, signalDs(bars), { startingEquity: 10000, simParams: SIM });
     expect(out.trades).toHaveLength(1);                 // si es 0, el snapshot no disparó scan → ajustar la serie
     expect(out.trades[0].hitType).toBe('sl');
+    // fill al open de bar1 (101.8)+slippage, NO al close de bar0 (100.0): un look-ahead daría entry≈100.09 < 101.8
     expect(out.trades[0].entry).toBeGreaterThan(101.8); // fill peor que el open por slippage de compra
     expect(out.trades[0].rMultiple).toBeLessThan(0);
     expect(out.finalLedger.open).toBeNull();
