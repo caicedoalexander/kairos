@@ -63,7 +63,7 @@ function drawdownStats(curve: readonly EquityPoint[]): DrawdownStats {
     }
   }
   const durationDays = maxDd > 0 ? (troughT.getTime() - ddPeakT.getTime()) / DAY_MS : 0;
-  return { maxDrawdownPct: maxDd, drawdownDurationDays: durationDays, recoveryDays: recoveryMs === null ? null : recoveryMs / DAY_MS };
+  return { maxDrawdownPct: maxDd, drawdownDurationDays: durationDays, recoveryDays: !recovered ? null : (recoveryMs === null ? null : recoveryMs / DAY_MS) };
 }
 
 export function computeMetrics(input: MetricsInput): BacktestMetrics {

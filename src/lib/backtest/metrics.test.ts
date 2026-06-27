@@ -55,4 +55,20 @@ describe('computeMetrics', () => {
     // pico 120 → valle 90 → DD = (120-90)/120 = 25%
     expect(m.maxDrawdownPct).toBeCloseTo(25, 6);
   });
+
+  test('recoveryDays null cuando maxDD no recupera', () => {
+    const m = computeMetrics({
+      trades: [], startingEquity: 100,
+      equityCurve: curve([
+        ['2024-01-01T00:00:00Z', 100], ['2024-01-02T00:00:00Z', 80],
+        ['2024-01-03T00:00:00Z', 110], ['2024-01-04T00:00:00Z', 60],
+      ]),
+      buyHold: { entryPrice: 1, exitPrice: 1 },
+      window: { from: new Date('2024-01-01T00:00:00Z'), to: new Date('2024-01-04T00:00:00Z') },
+    });
+    // pico inicial 100 → 80 (DD 20%) recupera en 110
+    // pico 110 → 60 (maxDD real = (110-60)/110 = 45.45%) no recupera
+    expect(m.recoveryDays).toBeNull();
+    expect(m.maxDrawdownPct).toBeCloseTo((110 - 60) / 110 * 100, 6);
+  });
 });
