@@ -81,5 +81,8 @@ describe('replay-driver', () => {
     expect(out.trades).toHaveLength(1);
     expect(out.trades[0].hitType).toBe('eod');
     expect(out.trades[0].exit).toBeCloseTo(101.82, 6);
+    // invariante: el último punto de la curva = equity realizada final (incluye la exitFee del cierre EOD)
+    const fl = out.finalLedger;
+    expect(out.equityCurve[out.equityCurve.length - 1].equity).toBeCloseTo(fl.startingEquity + fl.realized, 6);
   });
 });

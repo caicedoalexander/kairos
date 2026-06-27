@@ -69,6 +69,8 @@ export function runReplay(strategy: Strategy, symbol: string, ds: BacktestDataSo
     const exitFee = last.c * o.size * (cfg.simParams.fee_bps / 1e4);
     const realizedPnl = (last.c - o.entry) * o.size - o.entryFee - exitFee;
     ledger = applyClose(ledger, { hitType: 'eod', exitPrice: last.c, exitFee, realizedPnl }, o.openedAt, ds.closeTimeAt(bars.length - 1));
+    // Corregir el último punto de la curva para reflejar la equity realizada (incluye la exitFee del cierre EOD).
+    equityCurve[equityCurve.length - 1] = { t: ds.closeTimeAt(bars.length - 1), equity: markToMarket(ledger, last.c) };
   }
 
   return { trades: [...ledger.trades], equityCurve, finalLedger: ledger };

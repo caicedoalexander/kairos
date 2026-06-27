@@ -1,4 +1,4 @@
-import type { Verdict, SimParams } from '../execution/types.ts';
+import type { SimParams } from '../execution/types.ts';
 
 export interface Window { from: Date; to: Date; }
 
