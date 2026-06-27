@@ -192,22 +192,28 @@ con Valibot; imprime el reporte legible; persiste cada corrida. Sin `console.log
 
 ## 4. Persistencia — DDL `kairos.backtest_runs`
 
-Nueva migración (numeración siguiente a las de SP1–SP3). Append-first; el histórico es inmutable.
+**La tabla ya existe** en `src/db/schema.sql` (creada antes de SP4) con la forma de abajo, **sin**
+`symbol` ni `trades` y con `window` como `tstzrange` (no `from`/`to` separados). SP4 la extiende
+mínimamente editando el `CREATE TABLE IF NOT EXISTS` para incluir `symbol`/`trades`, más dos
+`ALTER TABLE … ADD COLUMN IF NOT EXISTS` idempotentes (porque `CREATE IF NOT EXISTS` no altera una
+tabla ya migrada). No hay migraciones numeradas: `schema.sql` se aplica entero e idempotente con
+`npm run migrate`. Append-first; el histórico es inmutable.
 
 ```sql
-CREATE TABLE kairos.backtest_runs (
+CREATE TABLE IF NOT EXISTS kairos.backtest_runs (
   id               text PRIMARY KEY,             -- ulid
-  strategy_id      text NOT NULL,
+  strategy_id      text NOT NULL REFERENCES kairos.strategies(id),
   strategy_version integer NOT NULL,
-  symbol           text NOT NULL,
-  window_from      timestamptz NOT NULL,
-  window_to        timestamptz NOT NULL,
-  mode             text NOT NULL DEFAULT 'det',  -- 'det' (LLM OFF) en SP4; 'llm' reservado para Fase 2
+  symbol           text,                         -- añadido en SP4 (single-símbolo)
+  "window"         tstzrange,                    -- ventana [from, to]
+  mode             text NOT NULL CHECK (mode IN ('det', 'llm')),  -- 'det' en SP4; 'llm' reservado Fase 2
   sim_params       jsonb NOT NULL,
   metrics          jsonb NOT NULL,
-  trades           jsonb NOT NULL,               -- lista compacta de ClosedTrade
+  trades           jsonb NOT NULL DEFAULT '[]'::jsonb,  -- añadido en SP4: lista compacta de ClosedTrade
   created_at       timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE kairos.backtest_runs ADD COLUMN IF NOT EXISTS symbol text;
+ALTER TABLE kairos.backtest_runs ADD COLUMN IF NOT EXISTS trades jsonb NOT NULL DEFAULT '[]'::jsonb;
 ```
 
 Repo `backtest-runs.ts`: `insertBacktestRun(run) → string (id)` y un lector simple
@@ -231,7 +237,7 @@ cierre `> T` (regresión de look-ahead).
 
 ## 6. Reproducibilidad (§20.4)
 
-Una corrida queda fijada por: **ventana** (`window_from/to`), **versión de estrategia**
+Una corrida queda fijada por: **ventana** (`window` tstzrange), **versión de estrategia**
 (`strategy_version`), **snapshot de datos** (histórico inmutable), **parámetros de sim** (`sim_params`).
 Como todo el code path es determinista y la contabilidad es pura, **la misma corrida produce métricas
 idénticas** — esto se verifica con un test de reproducibilidad (dos `runReplay` → igualdad exacta).
