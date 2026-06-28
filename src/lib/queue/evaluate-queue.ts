@@ -38,3 +38,7 @@ export async function enqueueEvaluateCandidate(signalId: string): Promise<void> 
   const spec = buildEvaluateJob(signalId);
   await getQueue().add(spec.name, spec.data, spec.opts);
 }
+
+export async function closeEvaluateQueue(): Promise<void> {
+  if (queue) { await queue.close(); queue = null; }
+}

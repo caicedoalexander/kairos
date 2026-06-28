@@ -1,10 +1,15 @@
 import 'dotenv/config';
 import { Queue, Worker } from 'bullmq';
 import type { ConnectionOptions } from 'bullmq';
-import { getBullConnection } from './lib/queue/connection.ts';
+import { getBullConnection, closeBullConnection } from './lib/queue/connection.ts';
 import { startEvaluateWorker } from './lib/queue/evaluate-worker.ts';
+import { closeEvaluateQueue } from './lib/queue/evaluate-queue.ts';
 import { runScanTick } from './lib/scanner/scan-tick.ts';
 import { runMonitorTick } from './lib/monitor/monitor-tick.ts';
+import { pool } from './db/pool.ts';
+import { createShutdown } from './lib/queue/shutdown.ts';
+
+const SHUTDOWN_TIMEOUT_MS = 10 * 1000;
 
 // L2: guarda contra valores no numéricos/no positivos en la env.
 const parsedInterval = Number(process.env.SCAN_INTERVAL_MS);
@@ -16,7 +21,7 @@ const MONITOR_INTERVAL_MS = Number.isFinite(parsedMonitor) && parsedMonitor > 0 
 const MONITOR_QUEUE = 'monitor-tick';
 
 async function main(): Promise<void> {
-  startEvaluateWorker();
+  const evaluateWorker = startEvaluateWorker();
 
   // H1: Worker importado top-level (no dynamic import) para que tsc tipe el constructor.
   // Cast necesario: ver evaluate-worker.ts — mismo motivo (ioredis bundleado vs top-level).
@@ -52,6 +57,21 @@ async function main(): Promise<void> {
   );
 
   process.stdout.write(`[worker] arriba: evaluate-candidate + scan cada ${SCAN_INTERVAL_MS}ms + monitor cada ${MONITOR_INTERVAL_MS}ms\n`);
+
+  const shutdown = createShutdown({
+    // Incluye los Queue además de los Worker: cada Queue abre su propia conexión IORedis (duplicate);
+    // cerrarlas evita conexiones colgadas. scanQueue/monitorQueue están en scope; la cola evaluate
+    // es un singleton interno → se cierra vía closeEvaluateQueue.
+    closeables: [scanWorker, evaluateWorker, monitorWorker, scanQueue, monitorQueue, { close: closeEvaluateQueue }],
+    closeConnection: closeBullConnection,
+    closePool: () => pool.end(),
+    exit: (code) => process.exit(code),
+    log: (msg) => process.stdout.write(`[worker] ${msg}\n`),
+    timeoutMs: SHUTDOWN_TIMEOUT_MS,
+    setTimer: (fn, ms) => { const t = setTimeout(fn, ms); return { clear: () => clearTimeout(t) }; },
+  });
+  process.on('SIGTERM', () => { void shutdown(); });
+  process.on('SIGINT', () => { void shutdown(); });
 }
 
 main().catch((err) => { process.stderr.write(`[worker] fatal: ${err}\n`); process.exit(1); });
