@@ -12,7 +12,9 @@ export interface EvaluateJobSpec {
 }
 
 // Puro y testeable: jobId = signalId → BullMQ ignora duplicados con el mismo id.
+// La guarda está aquí (y no en enqueueEvaluateCandidate) para que sea comprobable sin Redis.
 export function buildEvaluateJob(signalId: string): EvaluateJobSpec {
+  if (!signalId) throw new Error('signalId requerido para encolar evaluate-candidate');
   return {
     name: 'evaluate',
     data: { signalId },

@@ -21,6 +21,9 @@ async function main(): Promise<void> {
   const scanWorker = new Worker(SCAN_QUEUE, async () => { await runScanTick(new Date()); }, { connection: conn, concurrency: 1 });
   // Previene "Unhandled error event" fatal en blips de conexión a Redis.
   scanWorker.on('error', (err) => process.stderr.write(`[scan-worker] error: ${err}\n`));
+  // Alarma de infra: runScanTick audita sus errores por símbolo internamente; este listener
+  // es defensa adicional para throws que escapen del handler (p.ej. getStrategies falla total).
+  scanWorker.on('failed', (job, err) => process.stderr.write(`[scan-worker] job failed: ${err instanceof Error ? err.message : String(err)}\n`));
 
   // M2: upsertJobScheduler es la API idempotente de BullMQ v5 para jobs repetibles.
   // Firma verificada en node_modules/bullmq/dist/esm/classes/queue.d.ts:193:

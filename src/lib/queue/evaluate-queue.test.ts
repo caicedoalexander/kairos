@@ -17,4 +17,8 @@ describe('buildEvaluateJob', () => {
   test('el nombre de la cola es estable', () => {
     expect(EVALUATE_QUEUE).toBe('evaluate-candidate');
   });
+
+  test('lanza si signalId está vacío (protección de frontera sin Redis)', () => {
+    expect(() => buildEvaluateJob('')).toThrow('signalId requerido para encolar evaluate-candidate');
+  });
 });
