@@ -40,7 +40,8 @@ export async function executeOrderSim(p: ExecuteOrderSimParams): Promise<Executi
     const fill = simulateFill('buy', size, p.referencePrice, p.simParams);
     await insertFill({ orderId: claimed.id, price: fill.fillPrice, qty: fill.qty, fee: fill.fee }, exec);
     const positionId = await openPosition(
-      { symbol: p.symbol, entry: fill.fillPrice, size: fill.qty, sl: p.decision.verdict.sl, tp: p.decision.verdict.tp, strategyId: p.strategy.id, mode: p.mode },
+      { symbol: p.symbol, entry: fill.fillPrice, size: fill.qty, sl: p.decision.verdict.sl, tp: p.decision.verdict.tp,
+        strategyId: p.strategy.id, mode: p.mode, entryFee: fill.fee, decisionId: p.decision.id },
       exec,
     );
     await updateOrderStatus(claimed.id, 'filled', exec);

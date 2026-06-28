@@ -10,6 +10,8 @@ export interface OpenPositionInput {
   tp: number;
   strategyId: string;
   mode: TradingMode;
+  entryFee?: number;     // SP6: fee de entrada (default 0 para llamadores legacy/tests)
+  decisionId?: string;   // SP6: link a la decisión (legs OCO + reconciler)
 }
 
 export interface Exposure {
@@ -21,9 +23,9 @@ export interface Exposure {
 export async function openPosition(p: OpenPositionInput, exec: Executor = query): Promise<string> {
   const id = ulid();
   await exec(
-    `INSERT INTO kairos.positions (id, symbol, side, entry, size, sl, tp, status, strategy_id, mode)
-     VALUES ($1, $2, 'long', $3, $4, $5, $6, 'open', $7, $8)`,
-    [id, p.symbol, p.entry, p.size, p.sl, p.tp, p.strategyId, p.mode],
+    `INSERT INTO kairos.positions (id, symbol, side, entry, size, sl, tp, status, strategy_id, mode, entry_fee, decision_id)
+     VALUES ($1, $2, 'long', $3, $4, $5, $6, 'open', $7, $8, $9, $10)`,
+    [id, p.symbol, p.entry, p.size, p.sl, p.tp, p.strategyId, p.mode, p.entryFee ?? 0, p.decisionId ?? null],
   );
   return id;
 }

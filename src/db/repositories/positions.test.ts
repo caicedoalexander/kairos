@@ -52,4 +52,11 @@ describe('positions', () => {
   test('getDailyRealizedPnl devuelve un número (Σ cierres del día UTC)', async () => {
     expect(typeof (await getDailyRealizedPnl('sim'))).toBe('number');
   });
+
+  test('openPosition sin entryFee/decisionId usa defaults (0 / null)', async () => {
+    const id = await openPosition({ symbol: OTHER, entry: 10, size: 1, sl: 9, tp: 12, strategyId: STRATEGY_ID, mode: 'sim' });
+    const rows = await query<{ entry_fee: string; decision_id: string | null }>('SELECT entry_fee, decision_id FROM kairos.positions WHERE id = $1', [id]);
+    expect(Number(rows[0].entry_fee)).toBe(0);
+    expect(rows[0].decision_id).toBeNull();
+  });
 });

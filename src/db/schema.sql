@@ -93,6 +93,11 @@ CREATE TABLE IF NOT EXISTS kairos.positions (
   closed_at    timestamptz
 );
 
+-- SP6: fee de entrada para que el monitor calcule el P&L de salida; decision_id liga la posición
+-- a su decisión/órdenes (cerrar legs OCO al salir + reconciler). Idempotente (ADD COLUMN IF NOT EXISTS).
+ALTER TABLE kairos.positions ADD COLUMN IF NOT EXISTS entry_fee numeric NOT NULL DEFAULT 0;
+ALTER TABLE kairos.positions ADD COLUMN IF NOT EXISTS decision_id text REFERENCES kairos.decisions(id);
+
 -- Snapshots de cuenta para límites de pérdida diaria / drawdown desde el pico (§19).
 CREATE TABLE IF NOT EXISTS kairos.account_snapshots (
   id          text PRIMARY KEY,

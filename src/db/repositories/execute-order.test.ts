@@ -51,6 +51,16 @@ describe('executeOrderSim', () => {
     expect(r.fillPrice!).toBeGreaterThan(100);   // peor que mid en buy
   });
 
+  test('persiste entry_fee y decision_id en la posición', async () => {
+    const { signalId, decision } = await seedSignalAndDecision();
+    const r = await executeOrderSim({ signalId, symbol: SYMBOL, decision, riskResult: RISK_ALLOW, strategy: STRATEGY, referencePrice: 100, simParams: DEFAULT_SIM_PARAMS, mode: 'sim' });
+    const rows = await query<{ entry_fee: string; decision_id: string }>(
+      `SELECT entry_fee, decision_id FROM kairos.positions WHERE id = $1`, [r.positionId],
+    );
+    expect(Number(rows[0].entry_fee)).toBe(r.fee);          // fee del fill de entrada
+    expect(rows[0].decision_id).toBe(decision.id);
+  });
+
   test('idempotencia: repetir con el mismo signalId no duplica la posición', async () => {
     const { signalId, decision } = await seedSignalAndDecision();
     const before = await query<{ n: string }>(`SELECT COUNT(*) AS n FROM kairos.positions WHERE symbol = $1 AND mode = 'sim'`, [SYMBOL]);
