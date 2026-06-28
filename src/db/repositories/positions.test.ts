@@ -6,6 +6,7 @@ import { openPosition, closePosition, getExposure, getConsecutiveLosses, getDail
 const SYMBOL = 'POSBTC/USDT';
 const OTHER = 'POSETH/USDT';
 const STRATEGY_ID = 'positions-test-strategy';
+const STRATEGY_ID_2 = 'positions-test-strategy-2';
 
 beforeAll(async () => {
   await migrate();
@@ -14,21 +15,26 @@ beforeAll(async () => {
      VALUES ($1, false, '15m', $2::text[], $3::jsonb, '{}'::jsonb, 1) ON CONFLICT (id) DO UPDATE SET trigger_config = $3::jsonb`,
     [STRATEGY_ID, `{${SYMBOL},${OTHER}}`, JSON.stringify({ timeframes: { bias: '4h', context: '1h', trigger: '15m' }, entry: { all: [] } })],
   );
+  await query(
+    `INSERT INTO kairos.strategies (id, enabled, timeframe, symbols, trigger_config, risk_params, version)
+     VALUES ($1, false, '15m', $2::text[], $3::jsonb, '{}'::jsonb, 1) ON CONFLICT (id) DO NOTHING`,
+    [STRATEGY_ID_2, `{${SYMBOL},${OTHER}}`, JSON.stringify({ timeframes: { bias: '4h', context: '1h', trigger: '15m' }, entry: { all: [] } })],
+  );
 });
 afterEach(async () => {
   await query('DELETE FROM kairos.positions WHERE symbol IN ($1, $2)', [SYMBOL, OTHER]);
 });
 afterAll(async () => {
   await query('DELETE FROM kairos.positions WHERE symbol IN ($1, $2)', [SYMBOL, OTHER]);
-  await query('DELETE FROM kairos.strategies WHERE id = $1', [STRATEGY_ID]);
+  await query('DELETE FROM kairos.strategies WHERE id IN ($1, $2)', [STRATEGY_ID, STRATEGY_ID_2]);
   await pool.end();
 });
 
 describe('positions', () => {
   test('getExposure suma el notional del símbolo (entry*size) y aísla por símbolo', async () => {
-    await openPosition({ symbol: SYMBOL, entry: 100, size: 2, sl: 95, tp: 110, strategyId: STRATEGY_ID, mode: 'sim' }); // 200
-    await openPosition({ symbol: SYMBOL, entry: 100, size: 3, sl: 95, tp: 110, strategyId: STRATEGY_ID, mode: 'sim' }); // 300
-    await openPosition({ symbol: OTHER, entry: 50, size: 1, sl: 48, tp: 55, strategyId: STRATEGY_ID, mode: 'sim' });    // 50
+    await openPosition({ symbol: SYMBOL, entry: 100, size: 2, sl: 95, tp: 110, strategyId: STRATEGY_ID, mode: 'sim' });   // 200
+    await openPosition({ symbol: SYMBOL, entry: 100, size: 3, sl: 95, tp: 110, strategyId: STRATEGY_ID_2, mode: 'sim' }); // 300 (otra estrategia → no viola el índice)
+    await openPosition({ symbol: OTHER, entry: 50, size: 1, sl: 48, tp: 55, strategyId: STRATEGY_ID, mode: 'sim' });      // 50
     const exp = await getExposure('sim', SYMBOL);
     expect(exp.openNotionalSymbol).toBe(500);                  // exacto, aislado por símbolo
     expect(exp.openNotionalTotal).toBeGreaterThanOrEqual(550); // incluye OTHER y posibles de otros archivos

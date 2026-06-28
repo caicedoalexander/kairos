@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, afterAll } from 'vitest';
+import { describe, test, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { migrate } from '../migrate.ts';
 import { pool, query } from '../pool.ts';
 import { insertSignal } from './signals.ts';
@@ -32,6 +32,13 @@ async function seedSignalAndDecision() {
 }
 
 beforeAll(async () => { await migrate(); });
+afterEach(async () => {
+  await query(`DELETE FROM kairos.fills WHERE order_id IN (SELECT o.id FROM kairos.orders o JOIN kairos.decisions d ON d.id = o.decision_id JOIN kairos.signals s ON s.id = d.signal_id WHERE s.symbol = $1)`, [SYMBOL]);
+  await query(`DELETE FROM kairos.positions WHERE symbol = $1`, [SYMBOL]);
+  await query(`DELETE FROM kairos.orders WHERE decision_id IN (SELECT d.id FROM kairos.decisions d JOIN kairos.signals s ON s.id = d.signal_id WHERE s.symbol = $1)`, [SYMBOL]);
+  await query(`DELETE FROM kairos.decisions WHERE signal_id IN (SELECT id FROM kairos.signals WHERE symbol = $1)`, [SYMBOL]);
+  await query(`DELETE FROM kairos.signals WHERE symbol = $1`, [SYMBOL]);
+});
 afterAll(async () => {
   await query(`DELETE FROM kairos.fills WHERE order_id IN (SELECT o.id FROM kairos.orders o JOIN kairos.decisions d ON d.id = o.decision_id JOIN kairos.signals s ON s.id = d.signal_id WHERE s.symbol = $1)`, [SYMBOL]);
   await query(`DELETE FROM kairos.positions WHERE symbol = $1`, [SYMBOL]);
@@ -71,5 +78,17 @@ describe('executeOrderSim', () => {
     expect(second.orderId).toBe(first.orderId);
     const after = await query<{ n: string }>(`SELECT COUNT(*) AS n FROM kairos.positions WHERE symbol = $1 AND mode = 'sim'`, [SYMBOL]);
     expect(Number(after[0].n)).toBe(Number(before[0].n) + 1);
+  });
+
+  test('dedup per-setup: segunda señal del mismo setup → deduped, sin segunda posición', async () => {
+    const a = await seedSignalAndDecision();
+    const b = await seedSignalAndDecision();   // mismo (strategy, symbol, mode), distinta señal/decisión
+    const first = await executeOrderSim({ signalId: a.signalId, symbol: SYMBOL, decision: a.decision, riskResult: RISK_ALLOW, strategy: STRATEGY, referencePrice: 100, simParams: DEFAULT_SIM_PARAMS, mode: 'sim' });
+    const second = await executeOrderSim({ signalId: b.signalId, symbol: SYMBOL, decision: b.decision, riskResult: RISK_ALLOW, strategy: STRATEGY, referencePrice: 100, simParams: DEFAULT_SIM_PARAMS, mode: 'sim' });
+    expect(first.status).toBe('filled');
+    expect(second.status).toBe('deduped');
+    expect(second.positionId).toBeNull();
+    const cnt = await query<{ n: string }>(`SELECT COUNT(*) AS n FROM kairos.positions WHERE symbol = $1 AND status = 'open' AND mode = 'sim'`, [SYMBOL]);
+    expect(Number(cnt[0].n)).toBe(1);
   });
 });

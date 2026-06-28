@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, test, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { migrate } from '../db/migrate.ts';
 import { pool, query } from '../db/pool.ts';
 import { insertSignal } from '../db/repositories/signals.ts';
@@ -33,6 +33,14 @@ beforeAll(async () => {
     [STRATEGY_ID, `{${SYMBOL}}`, JSON.stringify({ timeframes: { bias: '4h', context: '1h', trigger: '15m' }, entry: { all: [] } }), JSON.stringify(RISK_PARAMS)],
   );
 });
+afterEach(async () => {
+  await query(`DELETE FROM kairos.fills WHERE order_id IN (SELECT o.id FROM kairos.orders o JOIN kairos.decisions d ON d.id=o.decision_id JOIN kairos.signals s ON s.id=d.signal_id WHERE s.symbol=$1)`, [SYMBOL]);
+  await query(`DELETE FROM kairos.positions WHERE symbol=$1`, [SYMBOL]);
+  await query(`DELETE FROM kairos.orders WHERE decision_id IN (SELECT d.id FROM kairos.decisions d JOIN kairos.signals s ON s.id=d.signal_id WHERE s.symbol=$1)`, [SYMBOL]);
+  await query(`DELETE FROM kairos.risk_evaluations WHERE decision_id IN (SELECT d.id FROM kairos.decisions d JOIN kairos.signals s ON s.id=d.signal_id WHERE s.symbol=$1)`, [SYMBOL]);
+  await query(`DELETE FROM kairos.decisions WHERE signal_id IN (SELECT id FROM kairos.signals WHERE symbol=$1)`, [SYMBOL]);
+  await query(`DELETE FROM kairos.signals WHERE symbol=$1`, [SYMBOL]);
+});
 afterAll(async () => {
   await query(`DELETE FROM kairos.fills WHERE order_id IN (SELECT o.id FROM kairos.orders o JOIN kairos.decisions d ON d.id=o.decision_id JOIN kairos.signals s ON s.id=d.signal_id WHERE s.symbol=$1)`, [SYMBOL]);
   await query(`DELETE FROM kairos.positions WHERE symbol=$1`, [SYMBOL]);
@@ -57,14 +65,19 @@ describe('evaluateCandidate', () => {
     expect(notify).toHaveBeenCalledOnce();
   });
 
-  test('idempotencia: reevaluar la misma señal → executed/duplicate, sin notificar de nuevo', async () => {
-    const signalId = await insertSignal(enterSignal());
+  test('dedup: segunda señal del mismo setup con posición abierta → skipped, sin segunda posición', async () => {
+    const firstId = await insertSignal(enterSignal());
     const notify = vi.fn(async () => ({ messageId: 'stub' }));
-    await evaluateCandidate(signalId, { notify, riskState: ALLOW_STATE });
-    const second = await evaluateCandidate(signalId, { notify, riskState: ALLOW_STATE });
-    expect(second.kind).toBe('executed');
-    if (second.kind === 'executed') expect(second.status).toBe('duplicate');
-    expect(notify).toHaveBeenCalledOnce(); // no re-notifica en duplicate
+    const first = await evaluateCandidate(firstId, { notify, riskState: ALLOW_STATE });
+    expect(first.kind).toBe('executed');
+
+    const secondId = await insertSignal(enterSignal());   // mismo setup, distinta señal
+    const second = await evaluateCandidate(secondId, { notify, riskState: ALLOW_STATE });
+    expect(second.kind).toBe('skipped');
+    if (second.kind === 'skipped') expect(second.reason).toContain('dedup');
+
+    const cnt = await query<{ n: string }>(`SELECT COUNT(*) AS n FROM kairos.positions WHERE symbol=$1 AND status='open'`, [SYMBOL]);
+    expect(Number(cnt[0].n)).toBe(1);
   });
 
   test('riesgo deny → no ejecuta, notifica el rechazo', async () => {

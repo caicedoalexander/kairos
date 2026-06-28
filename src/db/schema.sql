@@ -98,6 +98,11 @@ CREATE TABLE IF NOT EXISTS kairos.positions (
 ALTER TABLE kairos.positions ADD COLUMN IF NOT EXISTS entry_fee numeric NOT NULL DEFAULT 0;
 ALTER TABLE kairos.positions ADD COLUMN IF NOT EXISTS decision_id text REFERENCES kairos.decisions(id);
 
+-- SP6: dedup per-setup. Una sola posición viva por (strategy, symbol, mode). Race-safe por
+-- construcción (igual que UNIQUE(idempotency_key) en orders). Parcial: solo aplica a 'open'.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_open_setup
+  ON kairos.positions (strategy_id, symbol, mode) WHERE status = 'open';
+
 -- Snapshots de cuenta para límites de pérdida diaria / drawdown desde el pico (§19).
 CREATE TABLE IF NOT EXISTS kairos.account_snapshots (
   id          text PRIMARY KEY,

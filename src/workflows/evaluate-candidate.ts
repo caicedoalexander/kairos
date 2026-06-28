@@ -8,6 +8,7 @@ import { DEFAULT_SIM_PARAMS } from '../lib/execution/limits.ts';
 import { getMode } from '../lib/mode.ts';
 import { sendWhatsApp } from '../notify/whatsapp.ts';
 import { appendAuditLog } from '../db/repositories/audit-log.ts';
+import { hasOpenPositionForSetup } from '../db/repositories/positions.ts';
 import type { ExecutionResult } from '../lib/execution/types.ts';
 
 export type EvaluateOutcome =
@@ -48,6 +49,11 @@ export async function evaluateCandidate(signalId: string, deps: Partial<Evaluate
   const strategy = await getStrategy(signal.strategyId);
   if (!strategy) return { kind: 'not_found' };
 
+  // Dedup per-setup (pre-check barato; el índice parcial es la red ante carreras).
+  if (await hasOpenPositionForSetup(signal.strategyId, signal.symbol, mode)) {
+    return { kind: 'skipped', reason: 'dedup: posición abierta para el setup' };
+  }
+
   const verdict = buildDeterministicVerdict(signal, strategy);
   if (verdict.action === 'skip') {
     return { kind: 'skipped', reason: verdict.reason ?? 'skip' };
@@ -64,6 +70,10 @@ export async function evaluateCandidate(signalId: string, deps: Partial<Evaluate
     signalId, symbol: signal.symbol, decision, riskResult: risk, strategy,
     referencePrice: verdict.entry, simParams: DEFAULT_SIM_PARAMS, mode,
   });
+
+  if (exec.status === 'deduped') {
+    return { kind: 'skipped', reason: 'dedup: carrera con otra señal del mismo setup' };
+  }
 
   if (exec.status === 'filled') {
     // M3: fillPrice/qty son number|null en el tipo; en 'filled' nunca son null (fill dentro de la tx).
