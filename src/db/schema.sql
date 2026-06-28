@@ -25,6 +25,20 @@ CREATE TABLE IF NOT EXISTS kairos.signals (
 );
 CREATE INDEX IF NOT EXISTS signals_symbol_fired_at_idx ON kairos.signals (symbol, fired_at DESC);
 
+-- SP7: veredictos del decision-maker LLM en SOMBRA (Fase 2). Append-first; UNIQUE(signal_id)
+-- deduplica el shadow eval al reintentar. Separada de `decisions` (camino determinista).
+CREATE TABLE IF NOT EXISTS kairos.shadow_verdicts (
+  id           text PRIMARY KEY,
+  signal_id    text NOT NULL REFERENCES kairos.signals(id),
+  verdict      jsonb NOT NULL,
+  confianza    text NOT NULL,
+  razonamiento text,
+  model_used   text,
+  tokens       integer,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (signal_id)
+);
+
 -- Razonamiento explícito del decision-maker (append-only).
 CREATE TABLE IF NOT EXISTS kairos.decisions (
   id               text PRIMARY KEY,
