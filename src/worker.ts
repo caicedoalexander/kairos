@@ -4,11 +4,16 @@ import type { ConnectionOptions } from 'bullmq';
 import { getBullConnection } from './lib/queue/connection.ts';
 import { startEvaluateWorker } from './lib/queue/evaluate-worker.ts';
 import { runScanTick } from './lib/scanner/scan-tick.ts';
+import { runMonitorTick } from './lib/monitor/monitor-tick.ts';
 
 // L2: guarda contra valores no numéricos/no positivos en la env.
 const parsedInterval = Number(process.env.SCAN_INTERVAL_MS);
 const SCAN_INTERVAL_MS = Number.isFinite(parsedInterval) && parsedInterval > 0 ? parsedInterval : 15 * 60 * 1000;
 const SCAN_QUEUE = 'scan-tick';
+
+const parsedMonitor = Number(process.env.MONITOR_INTERVAL_MS);
+const MONITOR_INTERVAL_MS = Number.isFinite(parsedMonitor) && parsedMonitor > 0 ? parsedMonitor : 60 * 1000;
+const MONITOR_QUEUE = 'monitor-tick';
 
 async function main(): Promise<void> {
   startEvaluateWorker();
@@ -35,7 +40,18 @@ async function main(): Promise<void> {
     { name: 'tick', data: {}, opts: { removeOnComplete: true } },
   );
 
-  process.stdout.write(`[worker] arriba: evaluate-candidate + scan cada ${SCAN_INTERVAL_MS}ms\n`);
+  const monitorWorker = new Worker(MONITOR_QUEUE, async () => { await runMonitorTick(new Date()); }, { connection: conn, concurrency: 1 });
+  monitorWorker.on('error', (err) => process.stderr.write(`[monitor-worker] error: ${err}\n`));
+  monitorWorker.on('failed', (job, err) => process.stderr.write(`[monitor-worker] job failed: ${err instanceof Error ? err.message : String(err)}\n`));
+
+  const monitorQueue = new Queue(MONITOR_QUEUE, { connection: conn });
+  await monitorQueue.upsertJobScheduler(
+    'monitor-tick',
+    { every: MONITOR_INTERVAL_MS },
+    { name: 'tick', data: {}, opts: { removeOnComplete: true } },
+  );
+
+  process.stdout.write(`[worker] arriba: evaluate-candidate + scan cada ${SCAN_INTERVAL_MS}ms + monitor cada ${MONITOR_INTERVAL_MS}ms\n`);
 }
 
 main().catch((err) => { process.stderr.write(`[worker] fatal: ${err}\n`); process.exit(1); });
