@@ -49,11 +49,20 @@ acopla cadencias y mezcla responsabilidades).
 **Por tick:**
 
 1. `getOpenPositions(mode)` — todas las posiciones `open` del modo activo.
-2. Por cada posición: leer la **última vela cerrada del trigger-TF** de su estrategia (misma fuente
-   que el scanner — cero infra nueva), **acotada a velas que abrieron después de `opened_at`** de la
-   posición. Esto evita resolver el bracket en la misma vela de entrada (look-ahead / double-count),
-   respetando la convención del backtester (§20: resolver desde la vela siguiente). Exige exponer
-   `opened_at` en `getOpenPositions`.
+2. Por cada posición: leer **todas las velas cerradas del trigger-TF en orden ascendente**, **acotadas
+   a velas que abrieron estrictamente después de `opened_at`** (vía `getClosedCandlesAfter`, `open_time >
+   opened_at`), y resolver el bracket **barra a barra** cerrando en el **primer toque** — igual que el
+   replay del backtester (§20), que comparte la misma `resolveBracket`. Exige exponer `opened_at` en
+   `getOpenPositions`.
+
+   > **Paridad backtester↔monitor — "misma lógica, no mismas barras":** la *lógica* de resolución es
+   > idéntica (ascendente, primer toque, SL-primero, mismos fees/slippage). El *conjunto de barras* no:
+   > el backtester entra al `open` de la barra siguiente y resuelve **esa misma** barra; el monitor en
+   > vivo entra a media vela (`opened_at = now()`) y **excluye la vela de entrada** (no sabemos si el
+   > toque ocurrió antes o después de nuestro fill → la dirección conservadora). Consecuencia en `sim`:
+   > un SL/TP tocado **solo** dentro de la vela de entrada se resuelve una vela después (o se pierde si
+   > el precio no vuelve). Es aceptable en sim (el monitor es el único mecanismo de salida y la dirección
+   > es segura); en testnet/live lo cubre el **OCO residente en el exchange**, no este polling.
 3. `resolveBracket(position, bar, simParams)` (reusa la lógica del backtester, `bracket.ts`):
    - `null` (no toca SL ni TP): nada.
    - Toca SL/TP: en **una transacción** →
@@ -65,6 +74,13 @@ acopla cadencias y mezcla responsabilidades).
 **Idempotencia:** el cierre solo aplica si la posición sigue `open` (`rowCount=0` → ya cerrada →
 skip silencioso). Re-evaluar la misma vela en ticks sucesivos es seguro porque `resolveBracket` es
 determinista y el `UPDATE` condicional no re-cierra.
+
+> **Dependencia operativa (heredada del scanner):** el monitor lee `kairos.ohlcv_candles` (igual que
+> `scanSymbol`), que **algo externo debe mantener al día** (`npm run backfill`); `worker.ts` no cablea
+> backfill. Como en `sim` el monitor es el único mecanismo de salida, el cierre de posiciones hereda
+> esa dependencia: la cadencia del backfill debe ser ≤ `MONITOR_INTERVAL_MS` en el despliegue vivo, o
+> las salidas se retrasan. No es nuevo de SP6 (el scanner ya dependía de ello), pero ahora también
+> aplica a la salida.
 
 **Dato faltante — `entryFee`:** `resolveBracket` necesita `position.entryFee` y hoy `positions` no
 lo guarda (vive en `fills`). **Decisión:** añadir columna `entry_fee numeric` a `positions` y
