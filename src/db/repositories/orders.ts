@@ -91,3 +91,31 @@ export async function closeBracketLegs(
     [decisionId, hitPurpose],
   );
 }
+
+export interface StuckOrderRow { id: string; idempotency_key: string; purpose: string; }
+
+// Órdenes de entrada 'pending' sin fill, aisladas por modo. En sim la entry se llena en la misma
+// transacción → en arranque limpio esto es ~vacío; el valor real es en testnet/live (claim y fill
+// separados), donde habría que añadir además `AND o.created_at < now() - interval '5 minutes'`.
+export async function findStuckEntryOrders(mode: TradingMode, exec: Executor = query): Promise<StuckOrderRow[]> {
+  return exec<StuckOrderRow>(
+    `SELECT o.id, o.idempotency_key, o.purpose
+       FROM kairos.orders o
+       LEFT JOIN kairos.fills f ON f.order_id = o.id
+      WHERE o.purpose = 'entry' AND o.status = 'pending' AND f.id IS NULL AND o.mode = $1`,
+    [mode],
+  );
+}
+
+// Legs OCO 'pending' cuya posición ya está cerrada: huérfanas (deberían quedar filled/canceled al
+// salir). Aisladas por modo. Nota: posiciones SP5 con decision_id NULL no se detectan (el JOIN no
+// iguala NULL); son inocuas en sim y se aceptan en la transición.
+export async function findOrphanedClosedLegs(mode: TradingMode, exec: Executor = query): Promise<StuckOrderRow[]> {
+  return exec<StuckOrderRow>(
+    `SELECT o.id, o.idempotency_key, o.purpose
+       FROM kairos.orders o
+       JOIN kairos.positions p ON p.decision_id = o.decision_id
+      WHERE o.purpose IN ('sl', 'tp') AND o.status = 'pending' AND p.status = 'closed' AND p.mode = $1`,
+    [mode],
+  );
+}

@@ -8,6 +8,7 @@ import { runScanTick } from './lib/scanner/scan-tick.ts';
 import { runMonitorTick } from './lib/monitor/monitor-tick.ts';
 import { pool } from './db/pool.ts';
 import { createShutdown } from './lib/queue/shutdown.ts';
+import { runStartupReconcile } from './lib/reconcile/startup-reconcile.ts';
 
 const SHUTDOWN_TIMEOUT_MS = 10 * 1000;
 
@@ -21,6 +22,9 @@ const MONITOR_INTERVAL_MS = Number.isFinite(parsedMonitor) && parsedMonitor > 0 
 const MONITOR_QUEUE = 'monitor-tick';
 
 async function main(): Promise<void> {
+  const recon = await runStartupReconcile();
+  process.stdout.write(`[worker] reconcile de arranque: ${recon.stuckEntries} entradas colgadas, ${recon.orphanedLegs} legs huérfanas\n`);
+
   const evaluateWorker = startEvaluateWorker();
 
   // H1: Worker importado top-level (no dynamic import) para que tsc tipe el constructor.
