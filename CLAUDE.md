@@ -6,8 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Estado del proyecto
 
-**Fase 1 en curso — loop determinista en `sim` (sin LLM).** Ya hay implementación real en
-`src/` (scanner, ejecución, market-data, backtester, repos de dominio, cola BullMQ, worker).
+**Fase 1 COMPLETA en `sim` (sin LLM) — loop entrada→salida cerrado.** Ya hay implementación real en
+`src/` (scanner, ejecución, market-data, backtester, repos de dominio, cola BullMQ, worker, monitor
+de salida, reconciler, graceful shutdown).
 Existen `flue.config.ts`, `tsconfig.json`, `vitest.config.ts`, `docker-compose.yml` (Postgres +
 Redis) y `package.json` con scripts. La estructura `src/...` de los docs es en buena parte real,
 pero **verifica siempre que un archivo existe antes de asumirlo** (aún falta lo de Fase 2+).
@@ -20,10 +21,19 @@ Progreso por sprints (SP):
   worker BullMQ → `evaluateCandidate` (veredicto **determinista**, todavía sin LLM) → `check_risk`
   → `execute_order` sim → notify best-effort. Validado end-to-end en vivo. Plan en
   `docs/superpowers/plans/2026-06-28-sp5-loop-entrada-vivo.md`.
-- **SP6 (pendiente, antes de testnet):** monitor de salida (SL/TP en vivo), reconciler al
-  arranque, **dedup per-setup** (riesgo conocido: `scan` es stateless y emite una señal nueva por
-  tick → apila posiciones para el mismo setup; inofensivo en `sim`, destructivo en testnet/live),
-  graceful shutdown. Después: capa de **razonamiento** (decision-maker LLM + analistas).
+- **SP6 (hecho):** cierre de Fase 1 en `sim` — **monitor de salida** (`monitor-tick`: resuelve SL/TP
+  barra-a-barra reusando `resolveBracket`, anti-look-ahead vía `open_time > opened_at`, cierre OCO
+  transaccional + notify best-effort); **dedup per-setup** (índice único parcial
+  `idx_positions_open_setup` + status `deduped` en `executeOrderSim` + pre-check en `evaluateCandidate`
+  + audit `entry_deduped`) — **ya NO es bloqueador de testnet**; **graceful shutdown** (SIGTERM/SIGINT,
+  cierra workers/queues/conn/pool); **reconciler delgado** de arranque (audita entries colgadas y legs
+  huérfanas; sin ccxt — el diff contra exchange es de testnet). Plan en
+  `docs/superpowers/plans/2026-06-28-sp6-cierre-fase1.md`. Después: capa de **razonamiento**
+  (decision-maker LLM + analistas).
+
+> Pendientes antes de **testnet** (no de sim): OCO residente en el exchange (SL/TP inmediato real, no
+> polling por cierre de vela), lock Redis por candidato (§273), reconciler con `fetch` de ccxt, y
+> mantener `kairos.ohlcv_candles` al día (cadencia de backfill ≤ `MONITOR_INTERVAL_MS`).
 
 > Nota: `evaluate-candidate` se implementó como **función de orquestación** dirigida por código
 > (no `defineWorkflow` descubierto) porque en Fase 1 no hay `session` LLM; en Fase 2 los pasos
@@ -157,6 +167,8 @@ razonamiento (sigue en `sim` para medir edge) → **testnet** (plumbing real de 
 sim; no toques dinero real antes de validar en sim y testnet. Dashboard, futures, shorts y
 multi-exchange están **fuera de alcance** por ahora (no los construyas — YAGNI).
 
-**Dónde estamos:** el loop de *entrada* determinista corre en `sim` (SP5). Falta cerrar Fase 1
-con el de *salida* y el reconciler (SP6) antes de empezar la capa de razonamiento. No pases a
-**testnet** sin el dedup per-setup (ver Estado del proyecto) — apilaría posiciones con dinero real.
+**Dónde estamos:** Fase 1 **completa** en `sim` — el loop determinista entrada→salida corre cerrado
+(SP5 entrada + SP6 salida/dedup/shutdown/reconciler). El dedup per-setup ya está (índice único
+parcial), así que el riesgo de apilar posiciones está domado. Siguiente: la capa de **razonamiento**
+(decision-maker LLM + analistas), todavía en `sim` para medir edge; luego **testnet** (ver pendientes
+de testnet en Estado del proyecto: OCO residente, lock Redis, reconciler ccxt, backfill al día).
