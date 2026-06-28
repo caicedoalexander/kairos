@@ -9,9 +9,12 @@ export function startEvaluateWorker(): Worker<EvaluateJobData> {
   // Cast necesario: getBullConnection() retorna IORedis del paquete top-level; ConnectionOptions
   // en BullMQ refiere al ioredis bundleado en bullmq/node_modules — mismo runtime, distinto path de tipos.
   const conn = getBullConnection() as unknown as ConnectionOptions;
-  return new Worker<EvaluateJobData>(
+  const w = new Worker<EvaluateJobData>(
     EVALUATE_QUEUE,
     async (job) => evaluateCandidate(job.data.signalId),
     { connection: conn, concurrency: 1 },
   );
+  // Previene "Unhandled error event" fatal en blips de conexión a Redis.
+  w.on('error', (err) => process.stderr.write(`[evaluate-worker] error: ${err}\n`));
+  return w;
 }
