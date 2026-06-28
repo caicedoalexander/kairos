@@ -44,4 +44,29 @@ describe('runScanTick', () => {
     expect(enqueue).toHaveBeenCalledExactlyOnceWith('SIG-ETH');
     expect(onError).toHaveBeenCalledExactlyOnceWith('a', 'BTC/USDT', expect.any(Error));
   });
+
+  test('un fallo de enqueue no aborta el tick; onEnqueueError se llama con signalId y fired > enqueued', async () => {
+    // BTC dispara señal pero enqueue falla; ETH dispara señal y encola OK.
+    const scan = vi.fn(async (_s: Strategy, symbol: string) =>
+      symbol === 'BTC/USDT' ? 'SIG-BTC' : 'SIG-ETH',
+    );
+    const enqueue = vi.fn(async (signalId: string) => {
+      if (signalId === 'SIG-BTC') throw new Error('Redis caído');
+    });
+    const onError = vi.fn(async () => {});
+    const onEnqueueError = vi.fn(async () => {});
+    const res = await runScanTick(new Date('2026-03-07T00:00:00Z'), {
+      getStrategies: async () => [strat('a', ['BTC/USDT', 'ETH/USDT'])],
+      scan,
+      enqueue,
+      onError,
+      onEnqueueError,
+    });
+    // Ambos símbolos escaneados; ambas señales disparadas; solo ETH encolada.
+    expect(res).toEqual({ scanned: 2, fired: 2, enqueued: 1 });
+    // scan_error no se llama — el fallo fue en enqueue, no en scan.
+    expect(onError).not.toHaveBeenCalled();
+    // enqueue_error se llama con los args correctos, incluido signalId.
+    expect(onEnqueueError).toHaveBeenCalledExactlyOnceWith('a', 'BTC/USDT', 'SIG-BTC', expect.any(Error));
+  });
 });

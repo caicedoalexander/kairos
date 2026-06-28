@@ -9,6 +9,8 @@ export interface ScanTickDeps {
   scan: (strategy: Strategy, symbol: string, asOf: Date) => Promise<string | null>;
   enqueue: (signalId: string) => Promise<void>;
   onError: (strategyId: string, symbol: string, err: unknown) => Promise<void>;
+  /** Se llama cuando `enqueue` falla después de que `scan` ya persistió la señal. */
+  onEnqueueError: (strategyId: string, symbol: string, signalId: string, err: unknown) => Promise<void>;
 }
 
 export interface ScanTickResult { scanned: number; fired: number; enqueued: number; }
@@ -26,26 +28,61 @@ const DEFAULT_DEPS: ScanTickDeps = {
       payload: { strategyId, symbol, error: err instanceof Error ? err.message : String(err) },
     });
   },
+  // Fallo de cola: la señal ya quedó en kairos.signals (status fired).
+  // Se audita con eventType distinto para no confundirlo con un error de scan.
+  onEnqueueError: async (strategyId, symbol, signalId, err) => {
+    await appendAuditLog({
+      eventType: 'enqueue_error',
+      actor: 'scan_tick',
+      payload: { strategyId, symbol, signalId, error: err instanceof Error ? err.message : String(err) },
+    });
+  },
 };
 
-// Un tick determinista del scanner. Un fallo por símbolo se aísla (onError) y el tick continúa.
+interface SymbolResult { fired: number; enqueued: number; }
+
+/** Procesa un símbolo aislando scan y enqueue en handlers separados. */
+async function processSymbol(
+  strategy: Strategy,
+  symbol: string,
+  asOf: Date,
+  deps: ScanTickDeps,
+): Promise<SymbolResult> {
+  let signalId: string | null;
+  try {
+    signalId = await deps.scan(strategy, symbol, asOf);
+  } catch (err: unknown) {
+    // Fallo de scan: aísla el símbolo, el tick continúa con el resto.
+    try { await deps.onError(strategy.id, symbol, err); } catch { /* último recurso: handler también falló */ }
+    return { fired: 0, enqueued: 0 };
+  }
+
+  if (!signalId) return { fired: 0, enqueued: 0 };
+
+  // La señal ya está persistida en kairos.signals. Si enqueue falla, fired sube
+  // pero enqueued no — desajuste informativo que el reconciler (SP6) resolverá.
+  try {
+    await deps.enqueue(signalId);
+    return { fired: 1, enqueued: 1 };
+  } catch (err: unknown) {
+    try { await deps.onEnqueueError(strategy.id, symbol, signalId, err); } catch { /* último recurso */ }
+    return { fired: 1, enqueued: 0 };
+  }
+}
+
+// Un tick determinista del scanner. Scan y enqueue tienen handlers separados;
+// un fallo en cualquiera se aísla por símbolo y el tick continúa.
 export async function runScanTick(asOf: Date, deps: Partial<ScanTickDeps> = {}): Promise<ScanTickResult> {
-  const { getStrategies, scan, enqueue, onError } = { ...DEFAULT_DEPS, ...deps };
-  const strategies = await getStrategies();
+  const resolved = { ...DEFAULT_DEPS, ...deps };
+  const strategies = await resolved.getStrategies();
   let scanned = 0, fired = 0, enqueued = 0;
 
   for (const strategy of strategies) {
     for (const symbol of strategy.symbols) {
       scanned++;
-      try {
-        const signalId = await scan(strategy, symbol, asOf);
-        if (!signalId) continue;
-        fired++;
-        await enqueue(signalId);
-        enqueued++;
-      } catch (err: unknown) {
-        await onError(strategy.id, symbol, err);
-      }
+      const result = await processSymbol(strategy, symbol, asOf, resolved);
+      fired += result.fired;
+      enqueued += result.enqueued;
     }
   }
 
