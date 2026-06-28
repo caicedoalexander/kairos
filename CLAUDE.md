@@ -6,10 +6,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Estado del proyecto
 
-**Fase de diseño — todavía NO hay implementación.** El repo contiene solo el diseño, la
-configuración y el tooling de Claude. No existe `src/`, `flue.config.ts`, `Dockerfile`,
-`tsconfig.json` ni `node_modules` versionado. La estructura `src/...` que aparece en los
-docs es el **objetivo**, no algo existente — no asumas que un archivo está ahí; verifícalo.
+**Fase 1 en curso — loop determinista en `sim` (sin LLM).** Ya hay implementación real en
+`src/` (scanner, ejecución, market-data, backtester, repos de dominio, cola BullMQ, worker).
+Existen `flue.config.ts`, `tsconfig.json`, `vitest.config.ts`, `docker-compose.yml` (Postgres +
+Redis) y `package.json` con scripts. La estructura `src/...` de los docs es en buena parte real,
+pero **verifica siempre que un archivo existe antes de asumirlo** (aún falta lo de Fase 2+).
+
+Progreso por sprints (SP):
+- **SP1–SP4 (hechos):** tipos/schemas Valibot y límites de ejecución; repos de dominio (esquema
+  `kairos`); camino del dinero en `sim` (sizing, `check_risk`, `execute_order` idempotente,
+  bracket OCO); backtester (replay histórico + métricas) con CLI `npm run backtest`.
+- **SP5 (hecho):** loop de **entrada** vivo en `sim` — `scan-tick` recorre estrategias y encola →
+  worker BullMQ → `evaluateCandidate` (veredicto **determinista**, todavía sin LLM) → `check_risk`
+  → `execute_order` sim → notify best-effort. Validado end-to-end en vivo. Plan en
+  `docs/superpowers/plans/2026-06-28-sp5-loop-entrada-vivo.md`.
+- **SP6 (pendiente, antes de testnet):** monitor de salida (SL/TP en vivo), reconciler al
+  arranque, **dedup per-setup** (riesgo conocido: `scan` es stateless y emite una señal nueva por
+  tick → apila posiciones para el mismo setup; inofensivo en `sim`, destructivo en testnet/live),
+  graceful shutdown. Después: capa de **razonamiento** (decision-maker LLM + analistas).
+
+> Nota: `evaluate-candidate` se implementó como **función de orquestación** dirigida por código
+> (no `defineWorkflow` descubierto) porque en Fase 1 no hay `session` LLM; en Fase 2 los pasos
+> post-veredicto se reusan dentro de un handler de Flue. Es una desviación consciente de §12.
 
 `ARCHITECTURE.md` es la **fuente de verdad** del diseño (14 secciones: agentes, flujos,
 skills, tools, estado, modelos, ejecución, riesgos, fases). Léelo antes de implementar o
@@ -33,12 +51,23 @@ decision-maker delega a los analistas y emite veredicto (Valibot) → `check_ris
 
 ## Comandos
 
-No hay scripts en `package.json` ni código que construir/testear todavía. Flujo de desarrollo
-planeado (post-andamiaje, Fase 0): `npm install` → migraciones → `flue dev` (Node target
-local). El CLI `flue` lo provee `@flue/cli`.
+Setup local: `npm install` → `docker compose up -d` (Postgres + Redis `noeviction`) →
+`npm run migrate` → `npm run seed`. Config en `.env` (ver `.env.example`): `DATABASE_URL`,
+`REDIS_URL`, `REDIS_BULLMQ_URL`, credenciales de Evolution (`EVOLUTION_API_URL/KEY/INSTANCE`,
+`WHATSAPP_CONTROL_NUMBER`), `KAIROS_MODE` (default `sim`).
 
-Cuando exista tooling (tsc/lint/tests), **córrelo de verdad antes de afirmar que pasa** — no
-declares verde sin ejecutar.
+Scripts (`package.json`):
+- `npm test` / `npm run test:watch` — Vitest. Incluye **tests de integración** que tocan el
+  Postgres del compose (requieren `DATABASE_URL`); la suite unit no toca Redis. Cobertura 80%.
+- `npm run typecheck` — `tsc --noEmit`.
+- `npm run migrate` / `npm run seed` — crea el esquema `kairos` y la estrategia semilla.
+- `npm run backfill` — descarga OHLCV/funding/OI (ccxt público) al esquema `kairos`.
+- `npm run backtest` — replay histórico determinista (reporte + persistencia).
+- `npm run worker` — **proceso vivo**: worker de la cola `evaluate-candidate` + scan tick
+  repetible (BullMQ; necesita Redis). `SCAN_INTERVAL_MS` ajusta la cadencia.
+- `npm run dev` / `npm run build` / `npm start` — Flue Node target (`@flue/cli`).
+
+**Córrelo de verdad antes de afirmar que pasa** — no declares verde sin ejecutar.
 
 ## Trabajar con Flue (regla crítica)
 
@@ -99,7 +128,12 @@ Restricciones de Flue que **moldearon el diseño** (no las re-litigues sin relee
 - **`src/db.ts`** exporta por default el adapter `postgres(process.env.DATABASE_URL!)` (store
   de Flue). Los datos de dominio van por repositorios propios al esquema `kairos`, append-first.
 - **Subagentes** declarados como profiles en `subagents:[]` y delegados con `session.task`.
-- **Reconciliación exchange↔DB al arranque** antes de que el scanner dispare.
+- **Reconciliación exchange↔DB al arranque** antes de que el scanner dispare (pendiente, SP6).
+- **La notificación es best-effort**: un fallo de `notify` (Evolution caído/mal configurado) se
+  audita (`notify_failed`) y **nunca** propaga ni tumba el job tras ejecutar — la capa de
+  notificación está separada de la de ejecución (`notifyBestEffort` en `evaluate-candidate.ts`).
+- **Idempotencia en dos capas**: `jobId = signalId` deduplica el encolado (BullMQ) y
+  `UNIQUE(idempotency_key)` (= `signalId`) deduplica la ejecución. Reintentar nunca duplica.
 - Estilo: funciones <50 líneas, archivos <800, sin anidamiento >4 niveles, inmutabilidad por
   defecto, validación en los límites, sin secretos hardcodeados, sin `console.log` de debug.
 
@@ -122,3 +156,7 @@ razonamiento (sigue en `sim` para medir edge) → **testnet** (plumbing real de 
 **live** con poco capital. No gastes en modelos antes de que el loop determinista funcione en
 sim; no toques dinero real antes de validar en sim y testnet. Dashboard, futures, shorts y
 multi-exchange están **fuera de alcance** por ahora (no los construyas — YAGNI).
+
+**Dónde estamos:** el loop de *entrada* determinista corre en `sim` (SP5). Falta cerrar Fase 1
+con el de *salida* y el reconciler (SP6) antes de empezar la capa de razonamiento. No pases a
+**testnet** sin el dedup per-setup (ver Estado del proyecto) — apilaría posiciones con dinero real.
