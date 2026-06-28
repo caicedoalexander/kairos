@@ -117,4 +117,42 @@ describe('runMonitorTick integración', () => {
     );
     expect(audit.length).toBe(1);
   });
+
+  test('frontera exacta anti-look-ahead: vela con open_time == opened_at es EXCLUIDA aunque toque el SL', async () => {
+    // Discrimina > de >=:
+    //   Con >  (correcto): open_time == opened_at → excluida → posición permanece abierta (closed=0)
+    //   Con >= (bug):      open_time == opened_at → incluida → SL tocado → posición cerrada (closed=1)
+    await seedPosition();
+
+    // Leer opened_at real de la DB (timestamptz con precisión sub-segundo, igual que la frontera de getClosedCandlesAfter)
+    const positions = await getOpenPositions('sim');
+    const pos = positions.find((p) => p.symbol === SYMBOL)!;
+    expect(pos).toBeDefined();
+
+    const openedAt = pos.openedAt;
+
+    // Vela frontera: open_time == opened_at exactamente; low=90 <= sl=95 → tocaría el SL si se incluyera
+    const boundaryCandle = {
+      symbol: SYMBOL, timeframe: '15m',
+      openTime: openedAt,  // exactamente opened_at — esta es la frontera que discrimina > vs >=
+      o: 100, h: 101, l: 90, c: 96, v: 1,
+    };
+    await upsertCandles([boundaryCandle]);
+
+    // asOf engloba la vela frontera pero no hay vela posterior
+    const asOf = new Date(openedAt.getTime() + 30_000);
+
+    const result = await runMonitorTick(asOf, {
+      notify: async () => ({ messageId: null }),
+    });
+
+    expect(result.checked).toBe(1);
+    // La vela frontera debe estar EXCLUIDA: posición permanece abierta
+    expect(result.closed).toBe(0);
+
+    const prow = await query<{ status: string }>(
+      `SELECT status FROM kairos.positions WHERE id=$1`, [pos.id],
+    );
+    expect(prow[0].status).toBe('open');
+  });
 });

@@ -103,4 +103,24 @@ describe('getClosedCandlesAfter', () => {
     expect(await getClosedCandlesAfter(sym, '15m', new Date('2026-03-10T01:00:00Z'), new Date('2026-03-10T02:00:00Z'))).toHaveLength(0);
     await query(`DELETE FROM kairos.ohlcv_candles WHERE symbol = $1`, [sym]);
   });
+
+  test('frontera estricta: vela con open_time == afterOpenTime es EXCLUIDA (> no >=)', async () => {
+    // Este test discrimina > de >=: con >= (bug) la vela de 00:15 sería incluida; con > (correcto) no.
+    const sym = 'BNDTEST/USDT';
+    await upsertCandles([
+      { symbol: sym, timeframe: '15m', openTime: new Date('2026-04-01T00:00:00Z'), o: 1, h: 2, l: 0.5, c: 1.5, v: 10 },
+      { symbol: sym, timeframe: '15m', openTime: new Date('2026-04-01T00:15:00Z'), o: 2, h: 3, l: 1, c: 2.5, v: 12 }, // == afterOpenTime → debe excluirse
+      { symbol: sym, timeframe: '15m', openTime: new Date('2026-04-01T00:30:00Z'), o: 3, h: 4, l: 2, c: 3.5, v: 14 },
+    ]);
+    // afterOpenTime = 00:15 exactamente: la vela con open_time=00:15 está en la frontera.
+    // Con > (correcto): open_time=00:15 > 00:15 es FALSE → excluida → resultado [00:30]
+    // Con >= (bug):     open_time=00:15 >= 00:15 es TRUE  → incluida → resultado [00:15, 00:30]
+    const rows = await getClosedCandlesAfter(
+      sym, '15m',
+      new Date('2026-04-01T00:15:00Z'),
+      new Date('2026-04-01T00:40:00Z'),
+    );
+    expect(rows.map((r) => r.openTime.toISOString())).toEqual(['2026-04-01T00:30:00.000Z']);
+    await query(`DELETE FROM kairos.ohlcv_candles WHERE symbol = $1`, [sym]);
+  });
 });
