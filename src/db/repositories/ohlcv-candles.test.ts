@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { migrate } from '../migrate.ts';
 import { pool, query } from '../pool.ts';
-import { upsertCandles, getLatestOpenTime, getCandles, getLatestCandle } from './ohlcv-candles.ts';
+import { upsertCandles, getLatestOpenTime, getCandles, getClosedCandlesAfter } from './ohlcv-candles.ts';
 import type { OhlcvRow } from '../../lib/market-data/types.ts';
 
 const SYMBOL = 'TEST/USDT';
@@ -80,20 +80,27 @@ describe('getCandles', () => {
   });
 });
 
-describe('getLatestCandle', () => {
-  test('getLatestCandle devuelve la vela más reciente <= asOf', async () => {
-    const sym = 'LATESTBTC/USDT';
+describe('getClosedCandlesAfter', () => {
+  test('devuelve velas en [afterOpenTime+1ms, asOf] en orden ascendente y excluye la de entrada', async () => {
+    const sym = 'AFTERBTC/USDT';
     await upsertCandles([
-      { symbol: sym, timeframe: '15m', openTime: new Date('2026-03-10T00:00:00Z'), o: 1, h: 2, l: 0.5, c: 1.5, v: 10 },
-      { symbol: sym, timeframe: '15m', openTime: new Date('2026-03-10T00:15:00Z'), o: 1.5, h: 3, l: 1, c: 2.5, v: 12 },
+      { symbol: sym, timeframe: '15m', openTime: new Date('2026-03-10T00:00:00Z'), o: 1, h: 2, l: 0.5, c: 1.5, v: 10 },  // EXCLUIDA: open_time=00:00 no es > 00:05
+      { symbol: sym, timeframe: '15m', openTime: new Date('2026-03-10T00:15:00Z'), o: 2, h: 3, l: 1, c: 2.5, v: 12 },    // incluida
+      { symbol: sym, timeframe: '15m', openTime: new Date('2026-03-10T00:30:00Z'), o: 3, h: 4, l: 2, c: 3.5, v: 14 },    // incluida
     ]);
-    const bar = await getLatestCandle(sym, '15m', new Date('2026-03-10T00:20:00Z'));
-    expect(bar?.openTime.toISOString()).toBe('2026-03-10T00:15:00.000Z');
-    expect(bar?.c).toBe(2.5);
-    expect(await getLatestCandle(sym, '15m', new Date('2026-03-09T00:00:00Z'))).toBeNull();
-    // minOpenTime excluye velas <= ese instante (anti-look-ahead: no resolver la vela de entrada).
-    expect((await getLatestCandle(sym, '15m', new Date('2026-03-10T00:20:00Z'), new Date('2026-03-10T00:00:00Z')))?.openTime.toISOString()).toBe('2026-03-10T00:15:00.000Z');
-    expect(await getLatestCandle(sym, '15m', new Date('2026-03-10T00:20:00Z'), new Date('2026-03-10T00:15:00Z'))).toBeNull();
+    // afterOpenTime=00:05 (estricto >) excluye 00:00; asOf=00:40 incluye hasta 00:30
+    const rows = await getClosedCandlesAfter(
+      sym, '15m',
+      new Date('2026-03-10T00:05:00Z'),
+      new Date('2026-03-10T00:40:00Z'),
+    );
+    expect(rows.map((r) => r.openTime.toISOString())).toEqual([
+      '2026-03-10T00:15:00.000Z',
+      '2026-03-10T00:30:00.000Z',
+    ]);
+    expect(rows.map((r) => r.c)).toEqual([2.5, 3.5]);
+    // Sin velas en el rango → array vacío
+    expect(await getClosedCandlesAfter(sym, '15m', new Date('2026-03-10T01:00:00Z'), new Date('2026-03-10T02:00:00Z'))).toHaveLength(0);
     await query(`DELETE FROM kairos.ohlcv_candles WHERE symbol = $1`, [sym]);
   });
 });

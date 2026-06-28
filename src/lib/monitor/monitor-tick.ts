@@ -1,6 +1,6 @@
 import { getMode, type TradingMode } from '../mode.ts';
 import { getOpenPositions, type OpenPosition } from '../../db/repositories/positions.ts';
-import { getLatestCandle } from '../../db/repositories/ohlcv-candles.ts';
+import { getClosedCandlesAfter } from '../../db/repositories/ohlcv-candles.ts';
 import { resolveBracket } from '../execution/bracket.ts';
 import { closePositionOnBracket } from './close-position.ts';
 import { DEFAULT_SIM_PARAMS } from '../execution/limits.ts';
@@ -11,7 +11,7 @@ import type { SimParams, BarOHLC, BracketResolution } from '../execution/types.t
 
 export interface MonitorTickDeps {
   getOpenPositions: (mode: TradingMode) => Promise<OpenPosition[]>;
-  getBar: (symbol: string, timeframe: string, asOf: Date, openedAt: Date) => Promise<BarOHLC | null>;
+  getBars: (symbol: string, timeframe: string, asOf: Date, openedAt: Date) => Promise<BarOHLC[]>;
   closeOnBracket: (position: OpenPosition, resolution: BracketResolution, closedAt: Date) => Promise<boolean>;
   notify: (text: string) => Promise<{ messageId: string | null }>;
   onError: (positionId: string, err: unknown) => Promise<void>;
@@ -23,11 +23,12 @@ export interface MonitorTickResult { checked: number; closed: number; }
 
 const DEFAULT_DEPS: MonitorTickDeps = {
   getOpenPositions,
-  getBar: async (symbol, timeframe, asOf, openedAt) => {
-    // minOpenTime = openedAt: solo velas que abrieron DESPUÉS de la entrada (no resolver la vela
-    // de entrada — convención anti-look-ahead del backtester, §20).
-    const c = await getLatestCandle(symbol, timeframe, asOf, openedAt);
-    return c ? { open: c.o, high: c.h, low: c.l, close: c.c } : null;
+  getBars: async (symbol, timeframe, asOf, openedAt) => {
+    // openedAt = límite inferior estricto (open_time > openedAt): excluye la vela de entrada
+    // (anti-look-ahead §20). Las velas se devuelven en orden ascendente para resolución
+    // barra-a-barra, igual que el replay del backtester.
+    const candles = await getClosedCandlesAfter(symbol, timeframe, openedAt, asOf);
+    return candles.map((c) => ({ open: c.o, high: c.h, low: c.l, close: c.c }));
   },
   closeOnBracket: closePositionOnBracket,
   notify: sendWhatsApp,
@@ -39,18 +40,21 @@ const DEFAULT_DEPS: MonitorTickDeps = {
   mode: getMode(),
 };
 
-// Resuelve una posición: lee su última vela, resuelve el bracket y cierra+notifica si toca.
+// Resuelve una posición barra-a-barra: cierra en el primer hit (orden ascendente = primer hit
+// cronológico), igual que el replay del backtester (anti-divergencia §20.1).
 async function checkPosition(position: OpenPosition, asOf: Date, d: MonitorTickDeps): Promise<boolean> {
-  const bar = await d.getBar(position.symbol, position.triggerTimeframe, asOf, position.openedAt);
-  if (!bar) return false;
-  const resolution = resolveBracket(position, bar, d.simParams);
-  if (!resolution) return false;
-  if (!(await d.closeOnBracket(position, resolution, asOf))) return false;
-  const icon = resolution.hitType === 'tp' ? '🟢' : '🔴';
-  await notifyBestEffort(d.notify,
-    `${icon} ${position.symbol}: salida ${resolution.hitType.toUpperCase()} @ ${resolution.exitPrice} (pnl ${resolution.realizedPnl})`,
-    'monitor');
-  return true;
+  const bars = await d.getBars(position.symbol, position.triggerTimeframe, asOf, position.openedAt);
+  for (const bar of bars) {
+    const resolution = resolveBracket(position, bar, d.simParams);
+    if (!resolution) continue;
+    if (!(await d.closeOnBracket(position, resolution, asOf))) return false;
+    const icon = resolution.hitType === 'tp' ? '🟢' : '🔴';
+    await notifyBestEffort(d.notify,
+      `${icon} ${position.symbol}: salida ${resolution.hitType.toUpperCase()} @ ${resolution.exitPrice} (pnl ${resolution.realizedPnl})`,
+      'monitor');
+    return true;
+  }
+  return false;
 }
 
 // Un tick del monitor: cada posición abierta se resuelve aislada; un fallo se reporta y el tick sigue.

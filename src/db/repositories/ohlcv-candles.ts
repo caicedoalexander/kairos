@@ -43,23 +43,23 @@ export async function getLatestOpenTime(symbol: string, timeframe: string): Prom
   return rows[0]?.open_time ?? null;
 }
 
-export async function getLatestCandle(
-  symbol: string, timeframe: string, asOf: Date, minOpenTime?: Date,
-): Promise<OhlcvRow | null> {
+// Velas cerradas en la ventana de salida del monitor: estrictamente DESPUÉS de afterOpenTime
+// (excluye la vela de entrada — anti-look-ahead §20) y hasta asOf, en orden ascendente para
+// resolución barra-a-barra (igual que el replay del backtester).
+export async function getClosedCandlesAfter(
+  symbol: string, timeframe: string, afterOpenTime: Date, asOf: Date,
+): Promise<OhlcvRow[]> {
   const rows = await query<{
     symbol: string; timeframe: string; open_time: Date; o: string; h: string; l: string; c: string; v: string;
   }>(
     `SELECT symbol, timeframe, open_time, o, h, l, c, v
        FROM kairos.ohlcv_candles
-      WHERE symbol = $1 AND timeframe = $2 AND open_time <= $3
-        AND ($4::timestamptz IS NULL OR open_time > $4)
-      ORDER BY open_time DESC LIMIT 1`,
-    [symbol, timeframe, asOf, minOpenTime ?? null],
+      WHERE symbol = $1 AND timeframe = $2 AND open_time > $3 AND open_time <= $4
+      ORDER BY open_time ASC`,
+    [symbol, timeframe, afterOpenTime, asOf],
   );
-  const r = rows[0];
-  if (!r) return null;
-  return { symbol: r.symbol, timeframe: r.timeframe, openTime: r.open_time,
-    o: Number(r.o), h: Number(r.h), l: Number(r.l), c: Number(r.c), v: Number(r.v) };
+  return rows.map((r) => ({ symbol: r.symbol, timeframe: r.timeframe, openTime: r.open_time,
+    o: Number(r.o), h: Number(r.h), l: Number(r.l), c: Number(r.c), v: Number(r.v) }));
 }
 
 export async function getCandles(

@@ -9,7 +9,7 @@ function pos(id: string, over: Partial<OpenPosition> = {}): OpenPosition {
 function deps(over: Partial<MonitorTickDeps> = {}): MonitorTickDeps {
   return {
     getOpenPositions: async () => [pos('p1')],
-    getBar: async () => ({ open: 100, high: 101, low: 90, close: 96 }),   // toca SL (low 90 <= 95)
+    getBars: async () => [{ open: 100, high: 101, low: 90, close: 96 }],  // toca SL (low 90 <= 95)
     closeOnBracket: vi.fn(async () => true),
     notify: vi.fn(async () => ({ messageId: 'm' })),
     onError: vi.fn(async () => {}),
@@ -29,14 +29,14 @@ describe('runMonitorTick', () => {
   });
 
   test('vela que no toca SL/TP → no cierra ni notifica', async () => {
-    const d = deps({ getBar: async () => ({ open: 100, high: 101, low: 99, close: 100 }) });
+    const d = deps({ getBars: async () => [{ open: 100, high: 101, low: 99, close: 100 }] });
     const r = await runMonitorTick(new Date(), d);
     expect(r).toEqual({ checked: 1, closed: 0 });
     expect(d.notify).not.toHaveBeenCalled();
   });
 
   test('sin vela disponible → skip silencioso', async () => {
-    const d = deps({ getBar: async () => null });
+    const d = deps({ getBars: async () => [] });
     const r = await runMonitorTick(new Date(), d);
     expect(r.closed).toBe(0);
   });
@@ -51,9 +51,9 @@ describe('runMonitorTick', () => {
   test('error en una posición se aísla y se reporta; el tick sigue', async () => {
     const d = deps({
       getOpenPositions: async () => [pos('p1'), pos('p2')],
-      getBar: vi.fn()
-        .mockRejectedValueOnce(new Error('boom'))                                  // p1 falla
-        .mockResolvedValueOnce({ open: 100, high: 101, low: 90, close: 96 }),      // p2 toca SL
+      getBars: vi.fn()
+        .mockRejectedValueOnce(new Error('boom'))                                   // p1 falla
+        .mockResolvedValueOnce([{ open: 100, high: 101, low: 90, close: 96 }]),    // p2 toca SL
       onError: vi.fn(async () => {}),
     });
     const r = await runMonitorTick(new Date(), d);
