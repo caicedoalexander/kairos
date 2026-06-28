@@ -86,6 +86,11 @@ describe('runMonitorTick integración', () => {
     const asOf = new Date(openedAt.getTime() + 120_000);
 
     const result = await runMonitorTick(asOf, {
+      // Aislamiento: inyectamos getOpenPositions acotado a esta posición. runMonitorTick con deps
+      // por defecto opera sobre TODAS las posiciones sim de la DB compartida; bajo la suite en
+      // paralelo otros archivos tienen posiciones sim abiertas que contaminarían checked/closed
+      // (y este tick las cerraría). El getBars real (DEFAULT) sigue ejercitando el anti-look-ahead.
+      getOpenPositions: async () => [pos],
       // Best-effort: inyectamos notify no-op para no llamar a WhatsApp real
       notify: async () => ({ messageId: null }),
     });
@@ -143,6 +148,8 @@ describe('runMonitorTick integración', () => {
     const asOf = new Date(openedAt.getTime() + 30_000);
 
     const result = await runMonitorTick(asOf, {
+      // Aislamiento (ver test anterior): acota a esta posición para no depender del estado sim global.
+      getOpenPositions: async () => [pos],
       notify: async () => ({ messageId: null }),
     });
 
