@@ -3,7 +3,7 @@ import { migrate } from '../migrate.ts';
 import { pool, query } from '../pool.ts';
 import { insertSignal } from './signals.ts';
 import { persistDecision } from './decisions.ts';
-import { claimEntryOrder, getOrderByIdempotencyKey, updateOrderStatus, insertBracketLeg } from './orders.ts';
+import { claimEntryOrder, getOrderByIdempotencyKey, updateOrderStatus, insertBracketLeg, closeBracketLegs } from './orders.ts';
 import { insertFill } from './fills.ts';
 import type { Signal } from '../../lib/scanner/types.ts';
 
@@ -64,6 +64,20 @@ describe('claimEntryOrder (idempotencia)', () => {
       [legKey],
     );
     expect(rows[0].count).toBe('1');
+  });
+
+  test('closeBracketLegs marca la leg tocada filled y la otra canceled', async () => {
+    const decisionId = await seedDecision();
+    const entry = await claimEntryOrder({ idempotencyKey: `${SYMBOL}:cbl-entry`, decisionId, size: 1, mode: 'sim' });
+    await insertBracketLeg({ idempotencyKey: `${SYMBOL}:cbl-sl`, decisionId, size: 1, purpose: 'sl', parentId: entry!.id, mode: 'sim' });
+    await insertBracketLeg({ idempotencyKey: `${SYMBOL}:cbl-tp`, decisionId, size: 1, purpose: 'tp', parentId: entry!.id, mode: 'sim' });
+
+    await closeBracketLegs(decisionId, 'sl');
+
+    const rows = await query<{ purpose: string; status: string }>(`SELECT purpose, status FROM kairos.orders WHERE decision_id = $1 AND purpose IN ('sl','tp')`, [decisionId]);
+    const byPurpose = Object.fromEntries(rows.map((r) => [r.purpose, r.status]));
+    expect(byPurpose.sl).toBe('filled');
+    expect(byPurpose.tp).toBe('canceled');
   });
 
   test('updateOrderStatus + insertFill + bracket legs persisten', async () => {

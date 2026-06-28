@@ -43,6 +43,25 @@ export async function getLatestOpenTime(symbol: string, timeframe: string): Prom
   return rows[0]?.open_time ?? null;
 }
 
+export async function getLatestCandle(
+  symbol: string, timeframe: string, asOf: Date, minOpenTime?: Date,
+): Promise<OhlcvRow | null> {
+  const rows = await query<{
+    symbol: string; timeframe: string; open_time: Date; o: string; h: string; l: string; c: string; v: string;
+  }>(
+    `SELECT symbol, timeframe, open_time, o, h, l, c, v
+       FROM kairos.ohlcv_candles
+      WHERE symbol = $1 AND timeframe = $2 AND open_time <= $3
+        AND ($4::timestamptz IS NULL OR open_time > $4)
+      ORDER BY open_time DESC LIMIT 1`,
+    [symbol, timeframe, asOf, minOpenTime ?? null],
+  );
+  const r = rows[0];
+  if (!r) return null;
+  return { symbol: r.symbol, timeframe: r.timeframe, openTime: r.open_time,
+    o: Number(r.o), h: Number(r.h), l: Number(r.l), c: Number(r.c), v: Number(r.v) };
+}
+
 export async function getCandles(
   symbol: string, timeframe: string, from: Date, to: Date,
 ): Promise<OhlcvRow[]> {

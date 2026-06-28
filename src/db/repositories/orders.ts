@@ -79,3 +79,15 @@ export async function updateOrderStatus(
 ): Promise<void> {
   await exec(`UPDATE kairos.orders SET status = $2 WHERE id = $1`, [id, status]);
 }
+
+// Cierra las legs OCO de una decisión al resolver el bracket: la tocada → filled, la otra → canceled.
+export async function closeBracketLegs(
+  decisionId: string, hitPurpose: 'sl' | 'tp', exec: Executor = query,
+): Promise<void> {
+  await exec(
+    `UPDATE kairos.orders
+        SET status = CASE WHEN purpose = $2 THEN 'filled' ELSE 'canceled' END
+      WHERE decision_id = $1 AND purpose IN ('sl', 'tp')`,
+    [decisionId, hitPurpose],
+  );
+}
