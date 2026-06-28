@@ -34,6 +34,7 @@ beforeAll(async () => {
   );
 });
 afterEach(async () => {
+  await query(`DELETE FROM kairos.audit_log WHERE payload->>'symbol'=$1`, [SYMBOL]);
   await query(`DELETE FROM kairos.fills WHERE order_id IN (SELECT o.id FROM kairos.orders o JOIN kairos.decisions d ON d.id=o.decision_id JOIN kairos.signals s ON s.id=d.signal_id WHERE s.symbol=$1)`, [SYMBOL]);
   await query(`DELETE FROM kairos.positions WHERE symbol=$1`, [SYMBOL]);
   await query(`DELETE FROM kairos.orders WHERE decision_id IN (SELECT d.id FROM kairos.decisions d JOIN kairos.signals s ON s.id=d.signal_id WHERE s.symbol=$1)`, [SYMBOL]);
@@ -42,6 +43,7 @@ afterEach(async () => {
   await query(`DELETE FROM kairos.signals WHERE symbol=$1`, [SYMBOL]);
 });
 afterAll(async () => {
+  await query(`DELETE FROM kairos.audit_log WHERE payload->>'symbol'=$1`, [SYMBOL]);
   await query(`DELETE FROM kairos.fills WHERE order_id IN (SELECT o.id FROM kairos.orders o JOIN kairos.decisions d ON d.id=o.decision_id JOIN kairos.signals s ON s.id=d.signal_id WHERE s.symbol=$1)`, [SYMBOL]);
   await query(`DELETE FROM kairos.positions WHERE symbol=$1`, [SYMBOL]);
   await query(`DELETE FROM kairos.orders WHERE decision_id IN (SELECT d.id FROM kairos.decisions d JOIN kairos.signals s ON s.id=d.signal_id WHERE s.symbol=$1)`, [SYMBOL]);
@@ -78,6 +80,23 @@ describe('evaluateCandidate', () => {
 
     const cnt = await query<{ n: string }>(`SELECT COUNT(*) AS n FROM kairos.positions WHERE symbol=$1 AND status='open'`, [SYMBOL]);
     expect(Number(cnt[0].n)).toBe(1);
+  });
+
+  test('dedup pre-check: segunda señal del mismo setup emite audit_log entry_deduped', async () => {
+    const firstId = await insertSignal(enterSignal());
+    const notify = vi.fn(async () => ({ messageId: 'stub' }));
+    const first = await evaluateCandidate(firstId, { notify, riskState: ALLOW_STATE });
+    expect(first.kind).toBe('executed');
+
+    const secondId = await insertSignal(enterSignal());
+    const second = await evaluateCandidate(secondId, { notify, riskState: ALLOW_STATE });
+    expect(second.kind).toBe('skipped');
+
+    const rows = await query<{ n: string }>(
+      `SELECT COUNT(*) AS n FROM kairos.audit_log WHERE event_type='entry_deduped' AND payload->>'symbol'=$1`,
+      [SYMBOL],
+    );
+    expect(Number(rows[0].n)).toBeGreaterThanOrEqual(1);
   });
 
   test('riesgo deny → no ejecuta, notifica el rechazo', async () => {

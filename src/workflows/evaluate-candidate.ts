@@ -51,6 +51,10 @@ export async function evaluateCandidate(signalId: string, deps: Partial<Evaluate
 
   // Dedup per-setup (pre-check barato; el índice parcial es la red ante carreras).
   if (await hasOpenPositionForSetup(signal.strategyId, signal.symbol, mode)) {
+    try {
+      await appendAuditLog({ eventType: 'entry_deduped', actor: 'evaluate-candidate',
+        payload: { signalId, strategyId: signal.strategyId, symbol: signal.symbol, mode, via: 'pre-check' } });
+    } catch { /* telemetría best-effort: el skip es inocuo aunque falle el audit */ }
     return { kind: 'skipped', reason: 'dedup: posición abierta para el setup' };
   }
 
@@ -72,6 +76,10 @@ export async function evaluateCandidate(signalId: string, deps: Partial<Evaluate
   });
 
   if (exec.status === 'deduped') {
+    try {
+      await appendAuditLog({ eventType: 'entry_deduped', actor: 'evaluate-candidate',
+        payload: { signalId, strategyId: signal.strategyId, symbol: signal.symbol, mode, via: 'index-race' } });
+    } catch { /* telemetría best-effort: el skip es inocuo aunque falle el audit */ }
     return { kind: 'skipped', reason: 'dedup: carrera con otra señal del mismo setup' };
   }
 
