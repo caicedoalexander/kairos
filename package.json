@@ -14,6 +14,7 @@
     "seed": "node --experimental-strip-types src/db/seed-strategies.ts",
     "backfill": "node --experimental-strip-types src/lib/market-data/backfill.ts",
     "backtest": "node --experimental-strip-types src/cli/backtest.ts",
+    "worker": "node --experimental-strip-types src/worker.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -21,8 +22,10 @@
   "dependencies": {
     "@flue/postgres": "^1.0.0-beta.3",
     "@flue/runtime": "^1.0.0-beta.5",
+    "bullmq": "^5.79.2",
     "ccxt": "^4.5.60",
     "hono": "^4.12.27",
+    "ioredis": "^5.11.1",
     "pg": "^8.22.0",
     "technicalindicators": "^3.1.0",
     "ulidx": "^2.4.1",
