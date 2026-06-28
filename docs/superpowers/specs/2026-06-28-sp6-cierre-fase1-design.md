@@ -49,8 +49,11 @@ acopla cadencias y mezcla responsabilidades).
 **Por tick:**
 
 1. `getOpenPositions(mode)` — todas las posiciones `open` del modo activo.
-2. Por cada posición: leer la **última vela del trigger-TF** de su estrategia vía
-   `getCandles(symbol, tf, from, asOf)` (misma fuente que el scanner — cero infra nueva).
+2. Por cada posición: leer la **última vela cerrada del trigger-TF** de su estrategia (misma fuente
+   que el scanner — cero infra nueva), **acotada a velas que abrieron después de `opened_at`** de la
+   posición. Esto evita resolver el bracket en la misma vela de entrada (look-ahead / double-count),
+   respetando la convención del backtester (§20: resolver desde la vela siguiente). Exige exponer
+   `opened_at` en `getOpenPositions`.
 3. `resolveBracket(position, bar, simParams)` (reusa la lógica del backtester, `bracket.ts`):
    - `null` (no toca SL ni TP): nada.
    - Toca SL/TP: en **una transacción** →
@@ -115,12 +118,17 @@ workers tomando jobs ni conexiones colgadas.
 ### 4. Reconciler delgado (auto-consistencia de DB, sin ccxt)
 
 Pase de **arranque** en `worker.ts`, **antes** de programar el scheduler del scan (recién después
-arranca el loop, según §5 del ARCHITECTURE). Solo **audita**, no corrige nada que mueva dinero:
+arranca el loop, según §5 del ARCHITECTURE). Solo **audita** (aislado por `mode`), no corrige nada
+que mueva dinero:
 
-- Señales `fired` sin decisión/orden tras una ventana razonable (enqueue perdido) →
-  `appendAuditLog({ eventType: 'reconcile_orphan_signal', … })`.
-- Órdenes en estado de claim/pendiente colgadas sin `fill` ni `cancel` →
+- Órdenes de **entrada `pending` sin fill** (ejecución a medias / crash) →
   `appendAuditLog({ eventType: 'reconcile_stuck_order', … })`.
+- **Legs OCO `pending` de posiciones ya cerradas** (huérfanas) →
+  `appendAuditLog({ eventType: 'reconcile_orphaned_leg', … })`.
+
+**No** se detecta "señal `fired` sin decisión" como huérfana: las señales *skipped* y *deduped*
+tampoco persisten decisión, así que serían indistinguibles de una huérfana real sin rastrear el
+ciclo de vida de la señal (`signals.status`) — scope creep que se difiere.
 
 En `sim` no toca exchange. El diff exchange↔DB (corrección de desviaciones reales) es del sprint de
 testnet, donde `mode` aísla las posiciones a reconciliar.
@@ -128,15 +136,16 @@ testnet, donde `mode` aísla las posiciones a reconciliar.
 ## Interfaces nuevas (resumen)
 
 - `positions.ts`:
-  - `getOpenPositions(mode, exec?): Promise<OpenPosition[]>` — incluye `entryFee` (de la columna nueva).
+  - `getOpenPositions(mode, exec?): Promise<OpenPosition[]>` — incluye `entryFee`, `decisionId`, `triggerTimeframe` y `openedAt`.
   - `hasOpenPositionForSetup(strategyId, symbol, mode, exec?): Promise<boolean>`.
-  - `openPosition(...)` extendido para persistir `entry_fee`.
+  - `closeOpenPosition(id, realizedPnl, closedAt, exec?): Promise<boolean>` (idempotente, `WHERE status='open'`).
+  - `openPosition(...)` extendido para persistir `entry_fee` y `decision_id`.
 - `execute-order.ts`: `ExecutionResult.status` gana `'deduped'`; captura de violación del índice.
 - `evaluate-candidate.ts`: pre-check de dedup → `{ kind: 'skipped', reason }`.
 - `lib/monitor/monitor-tick.ts` (nuevo): `runMonitorTick(asOf, deps?)` con deps inyectables
   (mismo patrón que `scan-tick.ts`).
 - `worker.ts`: `monitorWorker` + `monitor-tick` scheduler + shutdown + reconciler de arranque.
-- Migración: índice único parcial + columna `entry_fee`.
+- Migración: columnas `entry_fee` y `decision_id` + índice único parcial `idx_positions_open_setup`.
 
 ## Orden de tareas (TDD, subagent-driven)
 
