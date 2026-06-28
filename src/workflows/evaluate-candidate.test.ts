@@ -2,8 +2,9 @@ import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest';
 import { migrate } from '../db/migrate.ts';
 import { pool, query } from '../db/pool.ts';
 import { insertSignal } from '../db/repositories/signals.ts';
+import * as strategiesRepo from '../db/repositories/strategies.ts';
 import { evaluateCandidate } from './evaluate-candidate.ts';
-import type { Signal, Strategy, Features } from '../lib/scanner/types.ts';
+import type { Signal, Features } from '../lib/scanner/types.ts';
 import type { GatheredState } from '../lib/execution/check-risk.ts';
 
 const SYMBOL = 'EVALBTC/USDT';
@@ -17,6 +18,11 @@ function features(close: number, atrPct: number): Features {
 function enterSignal(): Signal {
   return { strategyId: STRATEGY_ID, symbol: SYMBOL, firedAt: new Date('2026-03-07T00:00:00Z'),
     snapshot: { byTimeframe: { '15m': features(100, 2) }, mtfAlignment: 'aligned', levels: { support: null, resistance: null }, derivatives: { fundingZ: null, oiChangePct: null } } };
+}
+// atrPct=0 → buildDeterministicVerdict devuelve action:'skip' (condición atrPct<=0 en verdict.ts)
+function skipSignal(): Signal {
+  return { strategyId: STRATEGY_ID, symbol: SYMBOL, firedAt: new Date('2026-03-07T02:00:00Z'),
+    snapshot: { byTimeframe: { '15m': features(100, 0) }, mtfAlignment: 'aligned', levels: { support: null, resistance: null }, derivatives: { fundingZ: null, oiChangePct: null } } };
 }
 
 beforeAll(async () => {
@@ -75,5 +81,31 @@ describe('evaluateCandidate', () => {
   test('signalId inexistente → not_found, no lanza', async () => {
     const outcome = await evaluateCandidate('00000000000000000000000000', { notify: vi.fn(async () => ({ messageId: null })) });
     expect(outcome.kind).toBe('not_found');
+  });
+
+  test('veredicto skip (atrPct=0) → skipped, sin orden ni notificación', async () => {
+    const signalId = await insertSignal(skipSignal());
+    const notify = vi.fn(async () => ({ messageId: null }));
+    const outcome = await evaluateCandidate(signalId, { notify, riskState: ALLOW_STATE });
+    expect(outcome.kind).toBe('skipped');
+    if (outcome.kind === 'skipped') expect(outcome.reason).toBeTruthy();
+    expect(notify).not.toHaveBeenCalled();
+    const decisions = await query<{ id: string }>(
+      `SELECT d.id FROM kairos.decisions d JOIN kairos.signals s ON s.id=d.signal_id WHERE s.id=$1`,
+      [signalId],
+    );
+    expect(decisions.length).toBe(0);
+  });
+
+  test('señal válida con estrategia no registrada → not_found (path !strategy)', async () => {
+    // La FK de signals.strategy_id impide insertar una señal con strategyId inexistente en la DB.
+    // Se simula el retorno nulo de getStrategy para ejercer la rama if (!strategy).
+    const signalId = await insertSignal(enterSignal());
+    const spy = vi.spyOn(strategiesRepo, 'getStrategy').mockResolvedValueOnce(null);
+    const notify = vi.fn(async () => ({ messageId: null }));
+    const outcome = await evaluateCandidate(signalId, { notify, riskState: ALLOW_STATE });
+    spy.mockRestore();
+    expect(outcome.kind).toBe('not_found');
+    expect(notify).not.toHaveBeenCalled();
   });
 });
