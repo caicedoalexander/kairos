@@ -1205,7 +1205,17 @@ export function createShutdown(deps: ShutdownDeps): () => Promise<void> {
 Run: `npx vitest run src/lib/queue/shutdown.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Cablear el shutdown en `worker.ts`**
+- [ ] **Step 5: Exponer el cierre de la cola evaluate**
+
+El singleton `Queue` de `evaluate-queue.ts` (lo crea `enqueueEvaluateCandidate` en el proceso worker) abre su propia conexión y no es accesible desde `worker.ts`. Exponer su cierre. En `src/lib/queue/evaluate-queue.ts`, añadir al final:
+
+```ts
+export async function closeEvaluateQueue(): Promise<void> {
+  if (queue) { await queue.close(); queue = null; }
+}
+```
+
+- [ ] **Step 6: Cablear el shutdown en `worker.ts`**
 
 En `src/worker.ts`:
 
@@ -1213,6 +1223,7 @@ Imports y constante de timeout:
 
 ```ts
 import { getBullConnection, closeBullConnection } from './lib/queue/connection.ts';
+import { closeEvaluateQueue } from './lib/queue/evaluate-queue.ts';
 import { pool } from './db/pool.ts';
 import { createShutdown } from './lib/queue/shutdown.ts';
 // …
@@ -1228,8 +1239,9 @@ Al final de `main()`, tras el log de arranque, registrar los handlers:
 ```ts
   const shutdown = createShutdown({
     // Incluye los Queue además de los Worker: cada Queue abre su propia conexión IORedis (duplicate);
-    // cerrarlas evita conexiones colgadas. scanQueue/monitorQueue están en scope en main().
-    closeables: [scanWorker, evaluateWorker, monitorWorker, scanQueue, monitorQueue],
+    // cerrarlas evita conexiones colgadas. scanQueue/monitorQueue están en scope; la cola evaluate
+    // es un singleton interno → se cierra vía closeEvaluateQueue.
+    closeables: [scanWorker, evaluateWorker, monitorWorker, scanQueue, monitorQueue, { close: closeEvaluateQueue }],
     closeConnection: closeBullConnection,
     closePool: () => pool.end(),
     exit: (code) => process.exit(code),
@@ -1241,17 +1253,17 @@ Al final de `main()`, tras el log de arranque, registrar los handlers:
   process.on('SIGINT', () => { void shutdown(); });
 ```
 
-- [ ] **Step 6: Typecheck + smoke manual**
+- [ ] **Step 7: Typecheck + smoke manual**
 
 Run: `npm run typecheck`
 Expected: sin errores.
 
 Smoke manual: `npm run worker`, esperar el log de arranque, Ctrl+C → ver `apagando…` y `apagado limpio`, y que el proceso termina (no queda colgado).
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add src/lib/queue/shutdown.ts src/lib/queue/shutdown.test.ts src/worker.ts
+git add src/lib/queue/shutdown.ts src/lib/queue/shutdown.test.ts src/lib/queue/evaluate-queue.ts src/worker.ts
 git commit -m "feat: graceful shutdown del worker (SIGTERM/SIGINT) (SP6 Task 6)"
 ```
 
