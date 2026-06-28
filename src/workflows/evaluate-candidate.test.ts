@@ -97,6 +97,21 @@ describe('evaluateCandidate', () => {
     expect(decisions.length).toBe(0);
   });
 
+  test('notify best-effort: un fallo de notify NO tumba la evaluación tras ejecutar', async () => {
+    const signalId = await insertSignal(enterSignal());
+    const notify = vi.fn(async () => { throw new Error('Evolution caído'); });
+    // La notificación es capa separada best-effort: un fallo nunca debe propagarse tras mover dinero.
+    const outcome = await evaluateCandidate(signalId, { notify, riskState: ALLOW_STATE });
+    expect(outcome.kind).toBe('executed');
+    expect(notify).toHaveBeenCalledOnce();
+    if (outcome.kind !== 'executed') throw new Error('esperaba executed');
+    expect(outcome.status).toBe('filled');
+    expect(outcome.positionId).not.toBeNull();
+    // la posición se creó pese al fallo de notify
+    const pos = await query(`SELECT 1 FROM kairos.positions WHERE id=$1`, [outcome.positionId]);
+    expect(pos.length).toBe(1);
+  });
+
   test('señal válida con estrategia no registrada → not_found (path !strategy)', async () => {
     // La FK de signals.strategy_id impide insertar una señal con strategyId inexistente en la DB.
     // Se simula el retorno nulo de getStrategy para ejercer la rama if (!strategy).
