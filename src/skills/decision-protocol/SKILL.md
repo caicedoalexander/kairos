@@ -45,3 +45,6 @@ Emite **solo** el objeto estructurado pedido (sin prosa libre fuera de `razonami
 - `razonamiento`: 1–3 frases justificando el veredicto con la evidencia concreta.
 
 Ante evidencia insuficiente o contradictoria, prefiere `skip` con `confianza: baja`.
+
+Cuando `action` sea `skip`, emite igualmente `entry`, `sl` y `tp` con valor `0` (la capa
+determinista los ignora en un skip; lo relevante es `razonamiento` y `confianza`).

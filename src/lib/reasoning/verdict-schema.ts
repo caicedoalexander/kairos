@@ -10,7 +10,7 @@ export const LlmVerdictSchema = v.object({
   tp: v.number(),
   sizingFactor: v.pipe(v.number(), v.minValue(0), v.maxValue(1)),
   confianza: v.picklist(['alta', 'media', 'baja']),
-  razonamiento: v.string(),
+  razonamiento: v.pipe(v.string(), v.minLength(1)),
 });
 
 export type LlmVerdict = v.InferOutput<typeof LlmVerdictSchema>;
