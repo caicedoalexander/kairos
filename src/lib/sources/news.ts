@@ -7,7 +7,8 @@ export interface NewsItem { title: string; publishedAt: string; kind: string; ur
 export interface NewsResult { items: NewsItem[]; ok: boolean; }
 
 export const NEWS_WINDOW_HOURS = 12;                          // ventana de "catalizador reciente" (vive SOLO aquí)
-const NEWS_RSS_URL = process.env.NEWS_RSS_URL ?? 'https://cointelegraph.com/rss';
+// Lazy: lee el env en cada llamada (no a nivel de módulo) para ser inmune al orden de carga de dotenv.
+function rssUrl(): string { return process.env.NEWS_RSS_URL ?? 'https://cointelegraph.com/rss'; }
 const CACHE_TTL_OK_MS = 10 * 60 * 1000;                       // éxito: 10 min
 const CACHE_TTL_FAIL_MS = 60 * 1000;                          // fallo: 1 min (reintenta pronto)
 // Major-caps (§17.2): el RSS es general, así que filtramos titulares relevantes al símbolo por palabra clave.
@@ -56,15 +57,15 @@ export async function fetchNews(
 
   let result: NewsResult;
   try {
-    const res = await fetchImpl(NEWS_RSS_URL);
+    const res = await fetchImpl(rssUrl());
     if (!res.ok) throw new Error(`RSS respondió ${res.status}`);
     const xml = await res.text();
     const cutoff = now - NEWS_WINDOW_HOURS * 3600_000;
     const keywords = KEYWORDS[base] ?? [base.toLowerCase()];
     const items: NewsItem[] = parseRssItems(xml)
-      .filter((i) => i.title !== '' && Number.isFinite(Date.parse(i.pubDate)) && Date.parse(i.pubDate) >= cutoff)
-      .filter((i) => keywords.some((k) => i.title.toLowerCase().includes(k)))
-      .map((i) => ({ title: i.title, publishedAt: new Date(Date.parse(i.pubDate)).toISOString(), kind: 'news', url: i.link }));
+      .map((i) => ({ ...i, ts: Date.parse(i.pubDate) }))   // parsea la fecha una sola vez
+      .filter((i) => i.title !== '' && Number.isFinite(i.ts) && i.ts >= cutoff && keywords.some((k) => i.title.toLowerCase().includes(k)))
+      .map((i) => ({ title: i.title, publishedAt: new Date(i.ts).toISOString(), kind: 'news', url: i.link }));
     result = { items, ok: true };
   } catch {
     result = { items: [], ok: false };
