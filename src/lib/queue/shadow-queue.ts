@@ -12,6 +12,7 @@ export interface ShadowJobSpec {
 }
 
 // Puro y testeable: jobId = signalId → BullMQ ignora duplicados con el mismo id.
+// La guarda está aquí (y no en enqueueShadowEval) para que sea comprobable sin Redis.
 export function buildShadowJob(signalId: string): ShadowJobSpec {
   if (!signalId) throw new Error('signalId requerido para encolar shadow-eval');
   return { name: 'shadow', data: { signalId }, opts: { jobId: signalId, removeOnComplete: true, removeOnFail: false } };

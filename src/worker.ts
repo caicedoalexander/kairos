@@ -4,6 +4,7 @@ import type { ConnectionOptions } from 'bullmq';
 import { getBullConnection, closeBullConnection } from './lib/queue/connection.ts';
 import { startEvaluateWorker } from './lib/queue/evaluate-worker.ts';
 import { closeEvaluateQueue } from './lib/queue/evaluate-queue.ts';
+import { closeShadowQueue } from './lib/queue/shadow-queue.ts';
 import { runScanTick } from './lib/scanner/scan-tick.ts';
 import { runMonitorTick } from './lib/monitor/monitor-tick.ts';
 import { pool } from './db/pool.ts';
@@ -66,7 +67,7 @@ async function main(): Promise<void> {
     // Incluye los Queue además de los Worker: cada Queue abre su propia conexión IORedis (duplicate);
     // cerrarlas evita conexiones colgadas. scanQueue/monitorQueue están en scope; la cola evaluate
     // es un singleton interno → se cierra vía closeEvaluateQueue.
-    closeables: [scanWorker, evaluateWorker, monitorWorker, scanQueue, monitorQueue, { close: closeEvaluateQueue }],
+    closeables: [scanWorker, evaluateWorker, monitorWorker, scanQueue, monitorQueue, { close: closeEvaluateQueue }, { close: closeShadowQueue }],
     closeConnection: closeBullConnection,
     closePool: () => pool.end(),
     exit: (code) => process.exit(code),
