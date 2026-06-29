@@ -299,9 +299,7 @@ export default postgres(process.env.DATABASE_URL!);
 
 ### Resiliencia
 
-Flue **no trae failover de modelo**. La orquestación envuelve la llamada y reintenta en un modelo alterno ante error de proveedor (Sonnet→Opus, o secundario vía `registerProvider`).
-
-**(SP10)** La resiliencia reintenta el **mismo** modelo; la escalación a Opus es una **segunda pasada deliberada** gobernada por `shouldEscalate` (no un fallback de resiliencia).
+Flue **no trae failover de modelo**. La orquestación envuelve la llamada y reintenta ante error de proveedor (**(SP10)** con el **mismo** modelo — un secundario vía `registerProvider` es upgrade futuro). La resiliencia NO escala de modelo: la escalación a Opus es una **segunda pasada deliberada** gobernada por `shouldEscalate` (§294), no un fallback de resiliencia.
 
 ### Forma del costo por candidato
 
