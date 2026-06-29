@@ -58,12 +58,12 @@ runDecisionMaker(signalId, deps):
   signal + strategy → args
     ├─ analyze técnico (SP8)                                        → technical_read | null
     ├─ FUNDAMENTAL (SP9, condicional, código dirige):
-    │    1. if !deps.isMajorCap(symbol)  → fundamental_read=null, status='skipped_not_major' (sin fetch)
-    │    2. else news = deps.fetchNews(symbol)   ← best-effort: fail → [] + audit fundamental_fetch_failed
-    │    3. if deps.shouldRunFundamental(news, snapshot):
-    │         try analyzeFundamental({ symbol, news, derivatives }) → fundamental_read; status='ran'
-    │         catch → fundamental_read=null; status='failed'; audit fundamental_read_failed
-    │       else → fundamental_read=null; status='skipped_quiet'
+    │    1. if !deps.isMajorCap(symbol)  → read=null, status='skipped_not_major', fetch_ok=null (sin fetch)
+    │    2. else { items, ok } = deps.fetchNews(symbol)  ← best-effort: fail → {[],false} + audit fundamental_fetch_failed
+    │    3. if deps.shouldRunFundamental(items, snapshot):
+    │         try analyzeFundamental({ symbol, news: items, derivatives }) → read; status='ran'; fetch_ok=ok
+    │         catch → read=null; status='failed'; fetch_ok=ok; audit fundamental_read_failed
+    │       else → read=null; status = ok ? 'skipped_quiet' : 'skipped_fetch_failed'; fetch_ok=ok
     ├─ evaluate({ ...args, technical_read, fundamental_read })       → veredicto (decision-protocol)
     └─ persist(read técnico + read fundamental + status + veredicto) → shadow_verdicts (un INSERT)
 ```
@@ -83,10 +83,15 @@ El camino del dinero (`evaluateCandidate`) queda **intacto y sin LLM**. El major
    `shouldRunFundamental(news, snapshot)`. Umbrales como constantes nombradas.
 4. **`src/lib/reasoning/analyze-fundamental.ts`** — `analyzeFundamental(session, args) → { read,
    modelUsed, tokens }` vía `session.task({ agent: 'fundamental-analyst', result:
-   FundamentalReadSchema })`. Reutiliza `extractTokens`. Reutiliza/clona el patrón de
-   `analyze-technical.ts` (incl. interfaz `TaskSession`).
+   FundamentalReadSchema })`. Reutiliza `extractTokens`. **L1:** la interfaz `TaskSession` de
+   `analyze-technical.ts` está tipada a `{ data: TechnicalRead }`; aquí se **clona** con su propio
+   tipo `{ data: FundamentalRead }` (o se generaliza a `TaskSession<T>` — decisión del plan). NO se
+   reutiliza literal (daría mismatch de tipos).
 5. **`src/skills/fundamental-read/SKILL.md`** — doctrina: separar **catalizador de ruido**,
-   **decaimiento temporal** (§17.5), sesgo/veto/cautela (§17.4). Guía razonamiento, no añade cómputo.
+   **decaimiento temporal** (§17.5), leer **posicionamiento** desde funding/OI (`crowded_long` =
+   riesgo de squeeze), sesgo/veto/cautela (§17.4). El analista recibe `news` y `derivatives` en el
+   prompt; emite `bias`/`catalysts`/`positioning`/`confidence` (y `decayNote` si hay catalizador).
+   Guía razonamiento, no añade cómputo.
 
 ### Componentes modificados
 
@@ -105,10 +110,10 @@ El camino del dinero (`evaluateCandidate`) queda **intacto y sin LLM**. El major
    `isMajorCap`/`fetchNews`/`shouldRunFundamental`/`analyzeFundamental` (analyze sobre una sesión
    dedicada, p. ej. `harness.session('fundamental')`).
 9. **`src/db/schema.sql`** — `shadow_verdicts` gana `fundamental_read jsonb`, `fundamental_model
-   text`, `fundamental_tokens integer`, `fundamental_status text` (CREATE + `ALTER ... ADD COLUMN
-   IF NOT EXISTS`).
+   text`, `fundamental_tokens integer`, `fundamental_status text`, `fundamental_fetch_ok boolean`
+   (CREATE + `ALTER ... ADD COLUMN IF NOT EXISTS`).
 10. **`src/db/repositories/shadow-verdicts.ts`** — `ShadowVerdictRow` y el INSERT/SELECT se
-    extienden con los 4 campos nuevos.
+    extienden con los **5** campos nuevos.
 11. **`.env.example`** — `CRYPTOPANIC_API_KEY` ya existe; documentar la ventana/umbrales si se
     exponen por env (si no, constantes en código).
 
@@ -116,33 +121,40 @@ El camino del dinero (`evaluateCandidate`) queda **intacto y sin LLM**. El major
 
 ```ts
 export const FundamentalReadSchema = v.object({
-  bias:       v.picklist(['bullish', 'neutral', 'bearish']),   // sesgo macro del conjunto de noticias
-  catalysts:  v.array(v.object({                                // [] si no hay catalizador relevante
+  bias:        v.picklist(['bullish', 'neutral', 'bearish']),   // sesgo macro del conjunto leído
+  catalysts:   v.array(v.object({                               // [] si no hay catalizador relevante
     title:     v.pipe(v.string(), v.minLength(1)),
     sentiment: v.picklist(['bullish', 'neutral', 'bearish']),
     relevance: v.picklist(['high', 'medium', 'low']),
   })),
-  decayNote:  v.pipe(v.string(), v.minLength(1)),   // §17.5: frescura/decaimiento del catalizador
-  confidence: v.picklist(['alta', 'media', 'baja']),
+  positioning: v.picklist(['crowded_long', 'crowded_short', 'neutral']),  // §17.4: lectura de funding/OI
+  decayNote:   v.optional(v.pipe(v.string(), v.minLength(1))),  // §17.5: frescura del catalizador; ausente si catalysts=[]
+  confidence:  v.picklist(['alta', 'media', 'baja']),
 });
 export type FundamentalRead = v.InferOutput<typeof FundamentalReadSchema>;
 ```
 
+**`positioning` (H1):** los derivados (`fundingZ`/`oiChangePct`) son input **vivo** (§15, ya en el
+snapshot) y son una rama del gate — el analista puede dispararse **solo por derivados extremos**, sin
+noticias. Por eso el read necesita un slot estructurado para el posicionamiento (§17.4: "posicionamiento
+de riesgo → cautela → baja sizing"), no doblarlo en `bias`. `decayNote` es **opcional**: solo aplica
+cuando hay catalizador (en el camino positioning-only, `catalysts=[]` y `decayNote` se omite).
+
 Sentimiento social y on-chain quedan **fuera del schema** hasta que lleguen sus fuentes (LunarCrush /
-Glassnode) — YAGNI, consistente con CryptoPanic-only. Se añaden cuando se fetchean.
+Glassnode, §17.2) — YAGNI. `positioning` **no** se difiere porque su fuente ya está viva.
 
 ## Gate determinista (`fundamental-gate.ts`)
 
 ```ts
 const MAJOR_CAPS = new Set(['BTC', 'ETH']);     // §17.2: solo major-caps
-const NEWS_WINDOW_HOURS = 12;                    // ventana de "catalizador reciente"
 const FUNDING_Z_EXTREME = 2.0;                   // |z| de funding que activa cautela fundamental
 const OI_CHANGE_EXTREME_PCT = 10;                // |%| de cambio de OI que activa cautela
 
 // base de 'BTC/USDT' → 'BTC'
 export function isMajorCap(symbol: string): boolean { /* MAJOR_CAPS.has(base(symbol)) */ }
 
-// El cliente CryptoPanic ya filtra a la ventana, así que news.length>0 ⇒ catalizador en ventana.
+// El cliente CryptoPanic ya filtra a la ventana (la constante de ventana vive SOLO en el cliente,
+// M2), así que news.length>0 ⇒ catalizador en ventana. El gate no conoce la ventana.
 export function shouldRunFundamental(news: NewsItem[], snapshot: IndicatorSnapshot): boolean {
   const hasCatalyst = news.length > 0;
   const d = snapshot.derivatives;
@@ -154,33 +166,55 @@ export function shouldRunFundamental(news: NewsItem[], snapshot: IndicatorSnapsh
 ```
 
 `isMajorCap` se evalúa **antes** del fetch (corta sin gastar la llamada a CryptoPanic en alts).
+**M2:** `NEWS_WINDOW_HOURS` vive **solo** en el cliente CryptoPanic; el gate confía en que el cliente
+ya filtró (evita el drift de tener la constante en dos sitios).
 
 ## Cliente CryptoPanic (`src/lib/sources/cryptopanic.ts`)
 
-`fetchCryptoPanicNews(symbol, { now, fetchImpl? })` → `NewsItem[]` (`{ title, publishedAt, kind,
-url }`), filtrados a `NEWS_WINDOW_HOURS`. Best-effort:
+`fetchCryptoPanicNews(symbol, { now, fetchImpl? })` → `{ items: NewsItem[]; ok: boolean }` —
+`items` (`{ title, publishedAt, kind, url }`) filtrados a `NEWS_WINDOW_HOURS` (constante **solo aquí**,
+M2), y `ok` indica si el fetch tuvo éxito (para distinguir `[]`-vacío de `[]`-por-fallo, H2). Best-effort:
 
-- Lee `CRYPTOPANIC_API_KEY` de env (closure). **Si falta la key → `[]`** (degrada; la credencial
-  jamás entra al input del modelo — línea roja).
+- Lee `CRYPTOPANIC_API_KEY` de env (closure). **Si falta la key → `{ items: [], ok: false }`**
+  (degrada; la credencial jamás entra al input del modelo — línea roja).
 - Endpoint público free tier (`/api/v1/posts/?auth_token=…&currencies=BTC&public=true`).
-- HTTP error / timeout / parse error → `[]` (el llamador audita `fundamental_fetch_failed`). Mismo
-  principio que `notifyBestEffort`.
-- `fetchImpl` inyectable (default `globalThis.fetch`) para testear con JSON canónico sin red.
+- HTTP error / timeout / parse error → `{ items: [], ok: false }` (el llamador audita
+  `fundamental_fetch_failed`). Éxito con cero noticias → `{ items: [], ok: true }`. Mismo principio
+  best-effort que `notifyBestEffort`.
+- **Caché in-memory por `(base, ventana)` (M1):** TTL corto (≤ `NEWS_WINDOW_HOURS`, p. ej. 10 min)
+  para que varios candidatos BTC/ETH en la misma ventana **no** re-fetcheen y quemen la cuota free de
+  CryptoPanic. El caché guarda el resultado `{ items, ok }`; un fallo (`ok:false`) se cachea con TTL
+  más corto para reintentar pronto.
+- `fetchImpl` inyectable (default `globalThis.fetch`) para testear con JSON canónico sin red; `now`
+  inyectable para el filtro de ventana y el TTL del caché (los tests no usan reloj real).
 
 ## Persistencia (`shadow_verdicts`, delta)
 
 ```sql
 ALTER TABLE kairos.shadow_verdicts
-  ADD COLUMN IF NOT EXISTS fundamental_read   jsonb,     -- FundamentalRead; null si no corrió
-  ADD COLUMN IF NOT EXISTS fundamental_model  text,
-  ADD COLUMN IF NOT EXISTS fundamental_tokens integer,
-  ADD COLUMN IF NOT EXISTS fundamental_status text;      -- ran | skipped_not_major | skipped_quiet | failed
+  ADD COLUMN IF NOT EXISTS fundamental_read     jsonb,    -- FundamentalRead; null si no corrió
+  ADD COLUMN IF NOT EXISTS fundamental_model    text,
+  ADD COLUMN IF NOT EXISTS fundamental_tokens   integer,
+  ADD COLUMN IF NOT EXISTS fundamental_status   text,     -- ver taxonomía abajo
+  ADD COLUMN IF NOT EXISTS fundamental_fetch_ok boolean;  -- H2: salud del fetch (null = no se intentó)
 ```
 
-`fundamental_status` permite al A/B (SP10) distinguir *por qué* el read es null (omitido por gate vs
-fallo del modelo) sin minar el `audit_log`. Va en el **mismo INSERT** del veredicto (sin segunda
-fila ni segunda capa de idempotencia). Como en SP8, se persiste en `shadow_verdicts` (no en
-`decisions`, §730): en sombra el veredicto LLM y sus reads viven juntos para A/B; migran a
+**`fundamental_status` (taxonomía, H2)** — disposición del analista; el A/B (SP10) la usa para saber
+*por qué* el read es null sin minar el `audit_log`:
+
+| status | cuándo | `fetch_ok` |
+|---|---|---|
+| `skipped_not_major` | symbol no es BTC/ETH (sin fetch) | `null` |
+| `skipped_quiet` | major-cap, **fetch ok**, sin catalizador ni derivados extremos | `true` |
+| `skipped_fetch_failed` | major-cap, **fetch falló**, sin derivados extremos (no se sabe si había catalizador) | `false` |
+| `ran` | el analista corrió | `true` (limpio) / `false` (degradado: corrió por derivados extremos con noticias caídas) |
+| `failed` | el analista lanzó | refleja el fetch |
+
+`fundamental_fetch_ok` (H2) es ortogonal: distingue `skipped_quiet` (genuinamente tranquilo) de
+`skipped_fetch_failed`, y un `ran` limpio de un `ran` **degradado** (corrió solo por derivados con el
+lado de noticias caído). Sin esto el A/B contaría fetch-fallidos como "nada que leer", contaminando el
+denominador. Va en el **mismo INSERT** del veredicto. Como en SP8, se persiste en `shadow_verdicts`
+(no en `decisions`, §730): en sombra el veredicto LLM y sus reads viven juntos para A/B; migran a
 `decisions` cuando el LLM ejecute (SP10).
 
 ## Resiliencia y líneas rojas
@@ -199,16 +233,19 @@ fila ni segunda capa de idempotencia). Como en SP8, se persiste en `shadow_verdi
 
 ## Estrategia de testing
 
-- **Cliente CryptoPanic (unit):** `fetchImpl` inyectable; parsea un JSON canónico de CryptoPanic,
-  filtra por ventana (`now` inyectado), maneja key ausente → `[]`, HTTP error → `[]`. **Sin red.**
+- **Cliente CryptoPanic (unit):** `fetchImpl` inyectable; parsea un JSON canónico, filtra por ventana
+  (`now` inyectado), devuelve `{ items, ok }`; maneja key ausente → `{[],false}`, HTTP error →
+  `{[],false}`, éxito-vacío → `{[],true}`. **Caché:** un segundo fetch dentro del TTL no llama a
+  `fetchImpl` (se verifica con un spy). **Sin red.**
 - **Gate (unit, puro):** `isMajorCap` (BTC/ETH sí, alt no) y `shouldRunFundamental` por tabla
   (catalizador/no × derivados extremos/no × combinaciones).
 - **`analyzeFundamental` (unit):** sesión falsa que devuelve un `FundamentalRead` canónico (o lanza)
   — molde de SP8.
-- **`runDecisionMaker` (unit):** deps inyectadas cubren todas las ramas: `skipped_not_major` (no
-  fetch, no LLM), `skipped_quiet` (gate false), `ran` (persiste read+status), fetch-falla→degrada
-  (audit + sigue), analista-falla→`failed` (read null + audit + veredicto igual), persistencia del
-  `fundamental_status`. Sin llamar al modelo ni a la red.
+- **`runDecisionMaker` (unit):** deps inyectadas cubren todas las ramas y el `fundamental_status`/
+  `fetch_ok` resultante: `skipped_not_major` (no fetch, no LLM, fetch_ok null), `skipped_quiet`
+  (gate false, fetch ok), `skipped_fetch_failed` (gate false, fetch falló), `ran` limpio, `ran`
+  degradado (fetch falló pero derivados extremos → corre con news=[]), analista-falla→`failed`
+  (read null + audit + veredicto igual). Sin llamar al modelo ni a la red.
 - **Schema (unit):** `parseFundamentalRead` con casos válidos/ inválidos (incl. `catalysts: []`).
 - **Smoke vivo (separado):** `flue run decision-maker` con una señal BTC real → fetch real de
   CryptoPanic + Haiku fundamental + Sonnet integra. Valida el fetch externo end-to-end y la
@@ -230,6 +267,29 @@ fila ni segunda capa de idempotencia). Como en SP8, se persiste en `shadow_verdi
 - `npm test` (deps inyectadas) y `npm run typecheck` en verde; cobertura ≥ 80%.
 - Smoke vivo: `flue run decision-maker` produce un `fundamental_read` Valibot válido del modelo real
   a partir de noticias reales de CryptoPanic, y un veredicto que lo integra.
+
+## Hallazgos de revisión de diseño (resueltos en este spec)
+
+Revisado por `kairos-design-reviewer` contra la doc real de Flue, ARCHITECTURE.md (§9/§17/§730) y el
+código de SP7/SP8. Veredicto: aprobado, sin CRITICAL; líneas rojas confirmadas. Resoluciones:
+
+- **H1 — `positioning` en el schema:** el gate puede disparar solo por derivados extremos (sin
+  noticias); §730/§17.4 listan `positioning` como modulador de primera clase y su fuente (§15) ya
+  está viva → se añade `positioning` al `FundamentalReadSchema` y `decayNote` pasa a opcional (no
+  aplica en el camino positioning-only). `sentiment`/`onchain` siguen diferidos (sus fuentes no).
+- **H2 — taxonomía de `fundamental_status` + `fundamental_fetch_ok`:** el fetch-fallido se mislabel-aba
+  como `skipped_quiet` (y un `ran` por derivados-extremos con noticias caídas era indistinguible de un
+  `ran` limpio), contaminando el sustrato del A/B. Se añade el status `skipped_fetch_failed` y la
+  columna ortogonal `fundamental_fetch_ok boolean`; el cliente devuelve `{ items, ok }`.
+- **M1 — caché del fetch:** caché in-memory por `(base, ventana)` con TTL corto en el cliente
+  CryptoPanic, para no re-fetchear ni quemar la cuota free con varios candidatos en la misma ventana.
+- **M2 — ventana única:** `NEWS_WINDOW_HOURS` vive solo en el cliente; el gate confía en su filtrado
+  (sin drift de constante duplicada).
+- **L1 — `TaskSession` clonada:** `analyze-fundamental.ts` define su `TaskSession` tipada a
+  `FundamentalRead` (o se generaliza a `TaskSession<T>`), no reutiliza la de `analyze-technical.ts`.
+- **L2/L3 (informativos):** dos subagentes + dos sesiones nombradas no añaden riesgo (los subagentes
+  se registran en el agente, no en la sesión — misma API validada en SP8/M1); `MAJOR_CAPS` es un Set
+  nombrado, fácil de extender.
 
 ## Fuera de alcance de SP9 (van en SPs posteriores)
 
