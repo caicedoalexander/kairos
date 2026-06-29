@@ -31,6 +31,7 @@ describe('shadow_verdicts repo', () => {
       technicalRead: { bias: 'bullish' }, technicalModel: 'anthropic/claude-haiku-4-5', technicalTokens: 321,
       fundamentalRead: { bias: 'bearish', catalysts: [], positioning: 'crowded_long', confidence: 'alta' },
       fundamentalModel: 'anthropic/claude-haiku-4-5', fundamentalTokens: 222, fundamentalStatus: 'ran', fundamentalFetchOk: true,
+      escalated: true,
     });
     expect(await isAlreadyEvaluated(signalId)).toBe(true);
     const row = await getShadowVerdict(signalId);
@@ -45,6 +46,7 @@ describe('shadow_verdicts repo', () => {
     expect((row?.technicalRead as { bias: string }).bias).toBe('bullish');
     expect(row?.technicalModel).toBe('anthropic/claude-haiku-4-5');
     expect(row?.technicalTokens).toBe(321);
+    expect(row?.escalated).toBe(true);
   });
 
   test('fundamental omitido: read null + status + fetch_ok null se persisten', async () => {
@@ -54,11 +56,13 @@ describe('shadow_verdicts repo', () => {
       technicalRead: null, technicalModel: null, technicalTokens: null,
       fundamentalRead: null, fundamentalModel: null, fundamentalTokens: null,
       fundamentalStatus: 'skipped_not_major', fundamentalFetchOk: null,
+      escalated: false,
     });
     const row = await getShadowVerdict(signalId);
     expect(row?.fundamentalRead).toBeNull();
     expect(row?.fundamentalStatus).toBe('skipped_not_major');
     expect(row?.fundamentalFetchOk).toBeNull();
+    expect(row?.escalated).toBe(false);
   });
 
   test('analista degradado: technical_* null se persiste y se lee como null', async () => {
@@ -67,6 +71,7 @@ describe('shadow_verdicts repo', () => {
       signalId, verdict: {}, confianza: 'baja', razonamiento: null, modelUsed: 'm', tokens: null,
       technicalRead: null, technicalModel: null, technicalTokens: null,
       fundamentalRead: null, fundamentalModel: null, fundamentalTokens: null, fundamentalStatus: null, fundamentalFetchOk: null,
+      escalated: false,
     });
     const row = await getShadowVerdict(signalId);
     expect(row?.technicalRead).toBeNull();
@@ -78,10 +83,12 @@ describe('shadow_verdicts repo', () => {
     const signalId = await seedSignal();
     await insertShadowVerdict({ signalId, verdict: {}, confianza: 'alta', razonamiento: null, modelUsed: 'm', tokens: null,
       technicalRead: null, technicalModel: null, technicalTokens: null,
-      fundamentalRead: null, fundamentalModel: null, fundamentalTokens: null, fundamentalStatus: null, fundamentalFetchOk: null });
+      fundamentalRead: null, fundamentalModel: null, fundamentalTokens: null, fundamentalStatus: null, fundamentalFetchOk: null,
+      escalated: false });
     await insertShadowVerdict({ signalId, verdict: {}, confianza: 'baja', razonamiento: null, modelUsed: 'm2', tokens: null,
       technicalRead: null, technicalModel: null, technicalTokens: null,
-      fundamentalRead: null, fundamentalModel: null, fundamentalTokens: null, fundamentalStatus: null, fundamentalFetchOk: null });
+      fundamentalRead: null, fundamentalModel: null, fundamentalTokens: null, fundamentalStatus: null, fundamentalFetchOk: null,
+      escalated: false });
     const rows = await query(`SELECT confianza FROM kairos.shadow_verdicts WHERE signal_id=$1`, [signalId]);
     expect(rows.length).toBe(1);
     expect((rows[0] as { confianza: string }).confianza).toBe('alta'); // la primera gana

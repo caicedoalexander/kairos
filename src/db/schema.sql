@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS kairos.shadow_verdicts (
   fundamental_tokens integer,
   fundamental_status text,       -- ran | skipped_not_major | skipped_quiet | skipped_fetch_failed | failed
   fundamental_fetch_ok boolean,  -- salud del fetch (null = no se intentó)
+  escalated          boolean NOT NULL DEFAULT false, -- true si Sonnet escaló a Opus (SP10)
   created_at         timestamptz NOT NULL DEFAULT now(),
   UNIQUE (signal_id)
 );
@@ -56,6 +57,8 @@ ALTER TABLE kairos.shadow_verdicts ADD COLUMN IF NOT EXISTS fundamental_model   
 ALTER TABLE kairos.shadow_verdicts ADD COLUMN IF NOT EXISTS fundamental_tokens   integer;
 ALTER TABLE kairos.shadow_verdicts ADD COLUMN IF NOT EXISTS fundamental_status   text;
 ALTER TABLE kairos.shadow_verdicts ADD COLUMN IF NOT EXISTS fundamental_fetch_ok boolean;
+-- Upgrade idempotente para DBs creadas antes de SP10:
+ALTER TABLE kairos.shadow_verdicts ADD COLUMN IF NOT EXISTS escalated boolean NOT NULL DEFAULT false;
 
 -- Razonamiento explícito del decision-maker (append-only).
 CREATE TABLE IF NOT EXISTS kairos.decisions (
