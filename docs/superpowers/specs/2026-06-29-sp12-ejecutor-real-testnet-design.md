@@ -35,11 +35,17 @@ forma **durable** para el reconciler de SP13 — SP12 no pretende cerrar ese hue
 - **NO garantiza** (queda para SP13): (a) un **crash** del proceso entre el fill de entrada y la
   confirmación del OCO; (b) un **fill incierto** (NetworkError en la respuesta de `placeEntry` cuando
   la orden sí llenó). §18 (líneas 820-828) asigna ese hueco al **monitor/reconciler**, diferido a SP13.
-- **Marcadores durables que SP12 deja para el reconciler de SP13**:
+- **Marcadores durables que SP12 deja para el reconciler de SP13** (debe consultar **ambos**):
   - `positions.protected = false` → posición real abierta cuya protección OCO **no** está confirmada
     (incluye el crash-en-ventana, porque `protected` arranca en `false` y sólo se pone `true` tras
     confirmar el OCO).
-  - `orders.status = 'pending_execution'` → entrada incierta que pudo haber llenado en el exchange.
+  - `orders.status = 'pending_execution'` con fill presente → entrada que pudo haber llenado en el
+    exchange: fill incierto (paso 3) **o** carrera de setup con emergencia fallida (paso 4, donde no
+    hay fila de posición; ver nota N1 en §Flujo).
+- **Riesgo residual declarado (L1):** el OCO usa STOP_LOSS_LIMIT. En un *gap* a la baja el precio
+  puede saltar el límite y la leg SL no llenar → posición desprotegida pese a "OCO residente". El
+  `STOP_LIMIT_OFFSET_BPS` reduce la probabilidad, no la elimina. La red real ante gap es el monitor
+  app-managed de SP13. En testnet (play money) es aceptable.
 - **Gate operativo**: en SP12 sólo se corre **smoke vigilado** (una señal, owner mirando). El **loop
   testnet continuo y desatendido se habilita en SP13**, cuando el reconciler cierre el hueco.
 
@@ -110,6 +116,17 @@ withSetupLock(strategyId, symbol, mode)      ← mutua exclusión por SETUP (Red
   (constante `SETUP_LOCK_TTL_MS`, p.ej. 45 000). Si aun así expira, el `UNIQUE` es la única garantía
   restante (aceptable y documentado). Release en `finally` sólo si el token sigue siendo mío
   (check-and-del, script Lua o GET+DEL condicional).
+- **Re-check dentro del lock (N5, refuerza C1):** tras adquirir el lock y **antes** de `claimEntryOrder`/
+  `placeEntry`, re-ejecutar `hasOpenPositionForSetup(strategyId, symbol, mode)`. El pre-check de
+  `evaluateCandidate` (`evaluate-candidate.ts:49`) corre **fuera** del lock y puede estar stale; el
+  re-check dentro del lock convierte la carrera de setup en `deduped` con **cero round-trips al
+  exchange**, en vez de comprar y luego compensar. Con el lock + este re-check, el 23505 en
+  `openPosition` (paso 4) queda como edge real sólo si el lock expiró a mitad de ejecución.
+
+> **Desviación declarada de §18.3 (clave de lock, N6).** El diagrama de §18.3 (línea 807) usa
+> `lock:exec:{signalId}`. SP12 desvía a **lock por setup** (`kairos:lock:setup:<strategyId>:<symbol>:<mode>`)
+> porque el dedup de Kairos es per-setup, no per-señal (fix de C1); un lock por `signalId` no
+> serializaría dos señales del mismo setup. Desviación consciente, justificada por correctitud.
 
 ## Componentes (archivos)
 
@@ -117,14 +134,14 @@ withSetupLock(strategyId, symbol, mode)      ← mutua exclusión por SETUP (Red
 |---------|--------|-----------------|
 | `src/lib/execution/setup-lock.ts` | crear | `withSetupLock(strategyId, symbol, mode, fn)`: `SET kairos:lock:setup:<s>:<sym>:<mode> token NX PX ttl`; ejecuta `fn`; release condicional por token. No adquiere → sentinela `not_acquired`. Fail-closed si Redis no responde. |
 | `src/lib/ccxt-client.ts` | modificar | `getAuthenticatedClient()` **singleton** (una instancia/proceso) con `loadMarkets()` perezoso. Mantener `createAuthenticatedClient` como factory interno. |
-| `src/lib/execution/real-order/precision.ts` | crear | Helpers puros sobre el `market` de ccxt: `capPrice`, `roundAmount` (stepSize, hacia abajo), `roundPrice` (tickSize), `meetsMinNotional`, `netSellableQty(filledQty, fee, market)`. Testeable sin red. |
+| `src/lib/execution/real-order/precision.ts` | crear | Helpers puros sobre el `market` de ccxt: `capPrice`, `roundAmount` (stepSize, hacia abajo), `roundPrice` (tickSize), `meetsMinNotional`, `meetsLegMin(qty, market)` (minQty/minNotional de la leg, N4), `netSellableQty(filledQty, feeBase, market)`. Testeable sin red. |
 | `src/lib/execution/real-order/place-entry.ts` | crear | `placeEntry(client, args)`: aplica precisión; verifica `minNotional`/`minQty` (si no cumple → `{below_min:true}`); `createOrder(symbol,'limit','buy',amt,capPrice,{timeInForce:'IOC'})`; normaliza a `{filledQty, avgPrice, fee, feeBase, exchangeOrderId, raw}`. |
 | `src/lib/execution/real-order/place-oco.ts` | crear | `placeOco(client, {symbol, qty, sl, tp, market})`: `qty` ya **neta de fee y redondeada**; leg SL = STOP_LOSS_LIMIT con `stopPrice=sl` y `limitPrice=roundPrice(sl·(1−STOP_LIMIT_OFFSET_BPS/1e4))`; leg TP = TAKE_PROFIT/LIMIT_MAKER a `tp`. **Retry breve** (NetworkError→backoff; ExchangeError→no-retry). Devuelve `{orderListId, slOrderId, tpOrderId}` o lanza. |
 | `src/lib/execution/real-order/emergency-close.ts` | crear | `emergencyClose(client, {symbol, qty})`: `createMarketSellOrder` IOC por qty neta; normaliza `{exitPrice, exitFee, exchangeOrderId}`. |
 | `src/lib/execution/execute-order-real.ts` | crear | Orquesta la máquina de estados (ver Flujo). Deps inyectables (`client`, `placeEntry`, `placeOco`, `emergencyClose`) para test. |
 | `src/db/repositories/orders.ts` | modificar | `claimEntryOrder`/`insertBracketLeg` aceptan `exchangeOrderId?`; nuevo `setOrderExchangeId(id, exchangeOrderId, exec)`. |
-| `src/db/repositories/positions.ts` | modificar | `openPosition` acepta `protected?: boolean` (default **true**, para no tocar sim); nuevo `setPositionProtected(id, value, exec)`. |
-| `src/db/migrate.ts` (o SQL de esquema) | modificar | `ALTER TABLE kairos.positions ADD COLUMN protected boolean NOT NULL DEFAULT true`. (Default true = posiciones sim/históricas se consideran protegidas por su monitor paper.) |
+| `src/db/repositories/positions.ts` | modificar | `openPosition` gana parámetro **requerido** `protected: boolean` (sim pasa `true`, real pasa `false` — sin default fail-open, N2); nuevo `setPositionProtected(id, value, exec)`. Hay que actualizar todos los callers de `openPosition` (sim + helpers de test) para pasarlo explícito. |
+| `src/db/migrate.ts` (o SQL de esquema) | modificar | `ALTER TABLE kairos.positions ADD COLUMN protected boolean NOT NULL DEFAULT false`. Default **false** = pesimista/fail-safe (N2): un INSERT crudo que omita el flag se ve como desprotegido, no como protegido falsamente. La app siempre lo pasa explícito. |
 | `src/orchestration/evaluate-candidate.ts` | modificar | Despacho por modo; ramas de notify para `zero_fill`/`emergency_closed`. |
 | `src/lib/execution/types.ts` | modificar | `ExecutionResult.status` suma `'zero_fill' \| 'emergency_closed'`. |
 | `src/lib/execution/limits.ts` | modificar | Constantes nuevas: `SETUP_LOCK_TTL_MS`, `STOP_LIMIT_OFFSET_BPS`. |
@@ -138,6 +155,8 @@ withSetupLock(strategyId, symbol, mode)      ← mutua exclusión por SETUP (Red
 ```
 1. withSetupLock(strategyId, symbol, mode, async () => {
        not_acquired → return { status:'deduped' }   (otra señal del mismo setup va en curso)
+1.5  // re-check dentro del lock (N5): el pre-check de evaluateCandidate corre fuera del lock
+     if (hasOpenPositionForSetup(strategyId, symbol, mode)) → return { status:'deduped' }  // cero exchange
 2.    claim = claimEntryOrder(idem=signalId, …)
         !claim → getOrderByIdempotencyKey → return { status:'duplicate' }
 3.    entry = placeEntry(client, {symbol, size, refPrice, slippageBps, market})   ← EXCHANGE
@@ -149,16 +168,22 @@ withSetupLock(strategyId, symbol, mode)      ← mutua exclusión por SETUP (Red
                           audit 'entry_zero_fill' → return { status:'zero_fill' }
 4.    // entry llenó (full/parcial): tengo BTC real
         sellableQty = netSellableQty(entry.filledQty, entry.feeBase, market)   // neto de fee, ↓stepSize
+        if (!meetsLegMin(sellableQty, market))  // N4: tras restar fee + redondear puede caer bajo el mínimo
+            → emergencyClose(sellableQty); updateOrderStatus(claim.id,'pending_execution');
+              audit 'entry_dust_unprotectable' → return { status:'emergency_closed' }
+        insertFill(claim.id, entry.avgPrice, entry.filledQty, entry.fee)   // fill = qty BRUTA comprada
         try {
-          insertFill(claim.id, entry.avgPrice, entry.filledQty, entry.fee)
-          positionId = openPosition({entry:entry.avgPrice, size:entry.filledQty, sl, tp,
+          positionId = openPosition({entry:entry.avgPrice, size:sellableQty, sl, tp,    // N3: size = NETA
                                      entryFee:entry.fee, protected:false, …})   // ← protected=false
           updateOrderStatus(claim.id,'filled'); setOrderExchangeId(claim.id, entry.exchangeOrderId)
         } catch (e) {
-          // 23505: carrera de setup — la compra real YA ocurrió, no hay rollback que la deshaga
+          // 23505: carrera de setup (edge: lock expirado) — la compra real YA ocurrió, sin rollback
           if (isOpenSetupViolation(e)) {
-             exit = emergencyClose(client, {symbol, qty:sellableQty})           ← EXCHANGE
-             → return { status:'emergency_closed', reason:'setup-race' }   (o unprotected si falla)
+             try { emergencyClose(client, {symbol, qty:sellableQty}); updateOrderStatus(claim.id,'filled')
+                   → return { status:'emergency_closed', reason:'setup-race' } }
+             catch { // N1: emergencia falló → marcador durable QUERYABLE (no hay fila de posición)
+                   updateOrderStatus(claim.id,'pending_execution'); audit 'emergency_close_failed'
+                   alerta MÁXIMA; re-lanza → reconciler SP13 lo halla por orders.status='pending_execution' }
           } else throw e
         }
 5.    try {
@@ -171,12 +196,18 @@ withSetupLock(strategyId, symbol, mode)      ← mutua exclusión por SETUP (Red
           exit = emergencyClose(client, {symbol, qty:sellableQty})              ← EXCHANGE
           insertFill(cierre); closePosition(positionId, exit); audit 'oco_failed_emergency_closed'
           return { status:'emergency_closed', positionId, … }
-          // si emergencyClose TAMBIÉN falla (o el setup-race emergency falla):
-          //   positions.protected sigue false (marcador durable), audit 'emergency_close_failed',
+          // si emergencyClose TAMBIÉN falla: positions.protected sigue false (marcador durable
+          //   QUERYABLE: la fila de posición SÍ existe aquí), audit 'emergency_close_failed',
           //   alerta MÁXIMA, re-lanza → job 'failed' → lo retoma el reconciler de SP13.
       }
    })
 ```
+
+> **Asimetría de marcador durable entre los dos caminos de emergencia-fallida (N1).** En el paso 5 la
+> fila de posición **ya existe** → `protected=false` es el marcador. En el paso 4 (carrera de setup) la
+> fila de posición **no se creó** → el marcador es `orders.status='pending_execution'` sobre la entry
+> order (que tiene un fill real). El reconciler de SP13 debe consultar **ambos**:
+> `positions.protected=false` **OR** (`orders.status='pending_execution'` con fill presente).
 
 **Parámetros:** `refPrice = verdict.entry`; `slippageBps = DEFAULT_SIM_PARAMS.slippage_bps` (= 5);
 `size = riskResult.adjustedSize`. `market = client.market(symbol)` (de `loadMarkets`).
