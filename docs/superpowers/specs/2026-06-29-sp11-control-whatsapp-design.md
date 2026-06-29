@@ -48,13 +48,32 @@ la **capa de control** (estado + kill-switch + parsing LLM) sin riesgo sobre el 
 
 ```
 WhatsApp in → POST /channels/evolution/webhook
-  handleEvolutionWebhook (ya): verifyEvolutionWebhook → isAuthorizedSender → audit whatsapp.inbound
-  + NUEVO: extractMessageText(body) → parseSlashCommand(text):
-       intent conocido (estado/pausa/reanuda) → dispatchControl(intent, deps) → sendWhatsApp(reply, sender)   [sin LLM]
-       null (texto libre)                      → invoke(controlMaker, { input: { text, sender } })             [fire-and-forget]
+  handleEvolutionWebhook:
+    verifyEvolutionWebhook (firma) → si no: 401
+    isFromMe(body) === true → 200, descartar (H2: evita lazo con la propia respuesta saliente)
+    isAuthorizedSender → si no: 200, ignorar (antes de tocar LLM/handlers)
+    audit whatsapp.inbound
+    void processControlMessage(text, sender, deps).catch(auditBestEffort)   ← ACK-THEN-PROCESS (M2)
+    return 200   (rápido, no bloquea por DB/fetch saliente)
+
+processControlMessage(text, sender, deps):   [desacoplado, best-effort]
+    parseSlashCommand(text):
+      intent conocido (estado/pausa/reanuda) → dispatchControl(intent, deps) → sendWhatsApp(reply, sender)   [sin LLM]
+      null (texto libre)                      → invoke(controlMaker, { input: { text, sender } })             [fire-and-forget]
   control-maker.run(): session.skill('control-protocol', { result: ControlIntentSchema })
        → dispatchControl(intent, deps) → sendWhatsApp(reply, sender)
 ```
+
+**H2 — guardia `fromMe`:** cuando el bot responde por `sendWhatsApp`, Evolution puede emitir un
+`messages.upsert` saliente con `key.fromMe === true` y `remoteJid` = número de control. Sin la
+guardia, `isAuthorizedSender` daría true y la **propia respuesta** se procesaría como comando →
+lazo de realimentación (LLM + WhatsApp en bucle). El handler descarta (200) cualquier payload con
+`key.fromMe === true` **antes** de autorizar — no se confía solo en la config de eventos de Evolution.
+
+**M2 — ack-then-process:** el webhook responde **200 rápido** y procesa el comando de forma
+**desacoplada** (`void processControlMessage(...).catch(...)`), tanto el camino slash (DB + envío
+saliente) como el de texto libre (`invoke`). Evita exceder la ventana del webhook y maneja la promesa
+flotante con un `catch` best-effort (sin `unhandledRejection` que tumbe el proceso).
 
 El parsing slash determinista evita gastar LLM en el caso común (`/estado`, `/pausa`). El LLM (Haiku,
 `low`) solo corre para texto libre. La lógica de despacho (`dispatchControl`) es **compartida** por
@@ -87,13 +106,23 @@ ambos caminos (webhook directo y workflow), sin duplicación.
 
 ### Componentes modificados
 
-7. **`src/channels/evolution.ts`** — `handleEvolutionWebhook` gana, tras el audit: extraer el texto
-   del mensaje, `parseSlashCommand` → dispatch directo + reply, o `invoke(controlMaker, …)`. Deps
-   inyectables para test (parse/dispatch/invoke/reply). El webhook sigue devolviendo 200 siempre
-   (Evolution no reintenta) salvo 401 por firma.
+7. **`src/channels/evolution.ts`** — gana: `isFromMe(body): boolean` (lee `data.key.fromMe`, H2) y
+   `extractMessageText(body): string | null` (maneja las dos formas reales del payload Evolution:
+   `data.message.conversation` y `data.message.extendedTextMessage.text`, L2). `handleEvolutionWebhook`
+   descarta `fromMe` (200), y tras el audit lanza `processControlMessage` **desacoplado** (M2) y
+   devuelve 200. `processControlMessage(text, sender, deps)` (nuevo, deps inyectables: parse/dispatch/
+   invoke/sendWhatsApp) hace el ruteo slash/LLM. El webhook devuelve 401 solo por firma.
 8. **`src/lib/scanner/scan-tick.ts`** — `ScanTickDeps` gana `isPaused: () => Promise<boolean>`; al
    inicio del tick, si `isPaused()` → audita `scan_paused` y retorna `{ scanned: 0, fired: 0,
-   enqueued: 0 }` sin recorrer estrategias. El default cablea `getPaused` del repo.
+   enqueued: 0 }` sin recorrer estrategias (optimización barata: evita encolar). El default cablea
+   `getPaused` del repo.
+9. **`src/orchestration/evaluate-candidate.ts`** (H1 — enforcement duro) — al inicio de
+   `evaluateCandidate`, consultar `isPaused()`: si está pausado → audita `kill_switch_blocked` y
+   retorna **antes** de `buildDeterministicVerdict`/`check_risk`/`executeOrderSim`, sin abrir posición.
+   Esto **cierra la ventana de jobs ya encolados** antes de `/pausa` (el scanner solo evita encolar
+   *nuevos*; el worker procesa los que ya estaban en la cola). Alinea con §53 (kill-switch = límite
+   duro del camino de ejecución, no solo del scanner). `isPaused` se inyecta como dep (default
+   `getPaused`); el camino del dinero sigue determinista.
 
 ## Contrato `ControlIntent` (Valibot)
 
@@ -127,8 +156,15 @@ INSERT INTO kairos.bot_state (id) VALUES ('singleton') ON CONFLICT (id) DO NOTHI
   seguros (read + kill-switch). La línea roja "el LLM juzga/clasifica, el código ejecuta" se mantiene.
 - **Autorización:** ya garantizada por `isAuthorizedSender` (solo `WHATSAPP_CONTROL_NUMBER`); el
   webhook ignora (200) cualquier remitente no autorizado **antes** de tocar el LLM o los handlers.
-- **Kill-switch determinista:** `pausa` *previene* trades (el scanner no dispara); no ejecuta nada.
-  Es reversible y auditado.
+- **Kill-switch determinista en DOS puntos (H1):** `pausa` (a) hace que el scanner no dispare
+  (barato, evita encolar) **y** (b) hace que `evaluateCandidate` rechace antes de ejecutar (cierra la
+  ventana de jobs ya encolados). Es el enforcement duro de §53. Reversible y auditado. *Previene*
+  trades; no ejecuta nada. (M3: en `sim` el flag vive solo en Postgres `bot_state`, leído por tick/job;
+  ARCHITECTURE §276 prevé una copia caliente en Redis `kairos:killswitch` — **diferida a testnet**,
+  donde scanner y control pueden correr en procesos distintos y la latencia de la copia importa.)
+- **Fallo del LLM (L3):** si `session.skill` no produce un `ControlIntent` válido (Valibot lanza /
+  `ResultUnavailableError`), `control-maker.run()` lo atrapa (best-effort) y responde el texto de
+  ayuda (equivalente a `unknown`) — nunca propaga ni deja al usuario sin respuesta.
 - **Best-effort:** un fallo del parsing LLM o del envío de respuesta se audita y no propaga (el
   webhook ya respondió 200); nunca tumba el proceso. El money path y el scanner no dependen del
   control inbound.
@@ -146,8 +182,12 @@ INSERT INTO kairos.bot_state (id) VALUES ('singleton') ON CONFLICT (id) DO NOTHI
 - **`scan-tick` (unit):** `isPaused: async () => true` → no recorre estrategias, retorna ceros + audita
   `scan_paused`; `isPaused: false` → comportamiento normal (los tests existentes siguen verdes con el
   default `isPaused: false`).
+- **`evaluateCandidate` (unit, H1):** `isPaused: async () => true` → audita `kill_switch_blocked` y
+  retorna sin llamar a `executeOrder`/sizing; `isPaused: false` → comportamiento normal (los tests
+  existentes de evaluate-candidate siguen verdes con el default).
 - **Webhook (unit/integración):** un mensaje slash autorizado → llama `dispatchControl` + reply; texto
-  libre → llama `invoke`; remitente no autorizado → 200 sin dispatch; firma inválida → 401.
+  libre → llama `invoke`; remitente no autorizado → 200 sin dispatch; **`fromMe === true` → 200 sin
+  dispatch (H2)**; firma inválida → 401. `extractMessageText` parsea ambas formas del payload.
 - **`control-maker` (glue):** validado por typecheck + smoke; sin unit propio (la lógica vive en
   parse/dispatch ya testeados).
 - **Smoke vivo (owner-gated):** con Evolution configurado, enviar `/estado` y un texto libre ("¿cómo
@@ -167,6 +207,37 @@ INSERT INTO kairos.bot_state (id) VALUES ('singleton') ON CONFLICT (id) DO NOTHI
 - `npm test` + `npm run typecheck` en verde; cobertura ≥ 80%.
 - Smoke (owner o `flue run control-maker`): texto libre produce un `ControlIntent` válido y el dispatch
   correcto.
+
+## Desviación de ARCHITECTURE (declarada, M1)
+
+ARCHITECTURE §11/§65/§393-396 especifica el Control como **agente continuo** (`agents/control.ts`)
+alcanzado por `dispatch(control)`. SP11 lo implementa como un **workflow** (`workflows/control-maker.ts`)
+invocado con `invoke()`. **Justificación:** cada comando es *stateless* (sin memoria entre mensajes),
+y la doc de Flue recomienda un workflow finito sobre un agente continuo cuando el trabajo no continúa
+a través de mensajes (`workflows.md:7`). Un agente continuo añadiría estado de sesión innecesario.
+El plan **actualiza ARCHITECTURE §11/§65/§393-396** para reflejar `agent`→`workflow` y
+`dispatch`→`invoke` (no se deja el doc rector contradiciendo el código).
+
+## Hallazgos de revisión de diseño (resueltos en este spec)
+
+Revisado por `kairos-design-reviewer` contra la doc real de Flue (workflows.md, workflow-api.md,
+channels.md, skills.md) y ARCHITECTURE.md. `invoke()` desde un channel route **confirmado válido**
+("ambient `invoke()` from ... routes, channels, schedules", workflows.md:62-71). Sin CRITICAL.
+Resoluciones:
+
+- **H1 — kill-switch in-flight:** el chequeo solo en el scanner no detenía los jobs ya encolados. Se
+  añade el enforcement en `evaluateCandidate` (deny/return antes de ejecutar), cerrando la ventana y
+  alineando con §53. El scanner conserva el chequeo como optimización.
+- **H2 — lazo `fromMe`:** guardia `isFromMe(body) === true → 200, descartar`, antes de autorizar, para
+  que la respuesta saliente del bot no re-entre como comando.
+- **M1 — desviación agente→workflow:** declarada arriba; el plan actualiza ARCHITECTURE.
+- **M2 — ack-then-process:** el webhook responde 200 rápido y procesa desacoplado (slash y texto libre)
+  con `catch` best-effort.
+- **M3 — Redis hot-copy:** anotada como diferida a testnet (en `sim`, Postgres-only es suficiente).
+- **L2 — `extractMessageText`:** maneja `conversation` y `extendedTextMessage.text`.
+- **L3 — fallo del skill:** `control-maker` atrapa y responde ayuda.
+- **L1 — redelivery sin dedup:** aceptado (comandos idempotentes); reconocido, deduplicable por
+  `key.id` si molesta (YAGNI por ahora).
 
 ## Fuera de alcance de SP11
 
