@@ -24,6 +24,8 @@ function deps(over: Partial<DecisionMakerDeps> = {}): DecisionMakerDeps {
     shouldRunFundamental: () => true,
     analyzeFundamental: async () => ({ read: FREAD, modelUsed: 'anthropic/claude-haiku-4-5', tokens: 222 }),
     evaluate: async () => ({ verdict: VERDICT, modelUsed: 'anthropic/claude-sonnet-4-6', tokens: 99 }),
+    shouldEscalate: () => false,
+    escalate: async () => ({ verdict: { ...VERDICT, confianza: 'alta' }, modelUsed: 'anthropic/claude-opus-4-6', tokens: 999 }),
     persist: vi.fn(async () => {}),
     audit: vi.fn(async () => {}),
     ...over,
@@ -166,5 +168,27 @@ describe('runDecisionMaker', () => {
     expect(d.persist).toHaveBeenCalledWith(expect.objectContaining({
       fundamentalStatus: 'ran', fundamentalFetchOk: false, fundamentalRead: FREAD,
     }));
+  });
+
+  test('no escala → persiste escalated=false y el veredicto de la primera pasada', async () => {
+    const d = deps();
+    await runDecisionMaker('sig1', d);
+    expect(d.persist).toHaveBeenCalledWith(expect.objectContaining({ escalated: false, modelUsed: 'anthropic/claude-sonnet-4-6' }));
+  });
+
+  test('escala → corre Opus, persiste escalated=true y el veredicto/model de Opus', async () => {
+    const opusVerdict = { ...VERDICT, confianza: 'alta' as const };
+    const d = deps({ shouldEscalate: () => true, escalate: async () => ({ verdict: opusVerdict, modelUsed: 'anthropic/claude-opus-4-6', tokens: 999 }) });
+    const r = await runDecisionMaker('sig1', d);
+    expect(r.kind).toBe('persisted');
+    expect(d.persist).toHaveBeenCalledWith(expect.objectContaining({ escalated: true, modelUsed: 'anthropic/claude-opus-4-6', tokens: 999 }));
+  });
+
+  test('pasada Opus falla → degrada a Sonnet (escalated=false) + audit escalation_failed', async () => {
+    const d = deps({ shouldEscalate: () => true, escalate: async () => { throw new Error('opus caído'); } });
+    const r = await runDecisionMaker('sig1', d);
+    expect(r.kind).toBe('persisted');
+    expect(d.audit).toHaveBeenCalledWith(expect.objectContaining({ eventType: 'escalation_failed' }));
+    expect(d.persist).toHaveBeenCalledWith(expect.objectContaining({ escalated: false, modelUsed: 'anthropic/claude-sonnet-4-6' }));
   });
 });

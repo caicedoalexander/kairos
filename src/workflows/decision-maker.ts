@@ -70,6 +70,9 @@ export default defineWorkflow({
       shouldRunFundamental,
       analyzeFundamental: (fargs) => analyzeFundamental(fundSession, fargs as unknown as Record<string, unknown>, FUNDAMENTAL_MODEL),
       evaluate: (args) => evaluateWithFailover(session, args as unknown as Record<string, unknown>, MODELS),
+      // SP10-Task4 reemplaza estos stubs con shouldEscalate real + escalate (Opus):
+      shouldEscalate: () => false,
+      escalate: async () => { throw new Error('SP10-Task4 pendiente: cableado de escalate'); },
       persist: insertShadowVerdict,
       audit: appendAuditLog,
     };

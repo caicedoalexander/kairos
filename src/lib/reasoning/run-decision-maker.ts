@@ -26,6 +26,8 @@ export interface DecisionMakerDeps {
   shouldRunFundamental: (news: NewsItem[], snapshot: IndicatorSnapshot) => boolean;
   analyzeFundamental: (args: { symbol: string; news: NewsItem[]; derivatives: unknown }) => Promise<{ read: FundamentalRead; modelUsed: string; tokens: number | null }>;
   evaluate: (args: ShadowEvalArgs) => Promise<{ verdict: LlmVerdict; modelUsed: string; tokens: number | null }>;
+  shouldEscalate: (verdict: LlmVerdict, technicalRead: TechnicalRead | null, fundamentalRead: FundamentalRead | null) => boolean;
+  escalate: (args: ShadowEvalArgs) => Promise<{ verdict: LlmVerdict; modelUsed: string; tokens: number | null }>;
   persist: (row: ShadowVerdictRow) => Promise<void>;
   audit: AuditFn;
 }
@@ -110,9 +112,9 @@ export async function runDecisionMaker(signalId: string, deps: DecisionMakerDeps
   const fund = await runFundamentalStep(signalId, signal, deps);
 
   const evalArgs: ShadowEvalArgs = { ...args, technical_read: tech.read, fundamental_read: fund.read };
-  let evaluated: { verdict: LlmVerdict; modelUsed: string; tokens: number | null };
+  let first: { verdict: LlmVerdict; modelUsed: string; tokens: number | null };
   try {
-    evaluated = await deps.evaluate(evalArgs);
+    first = await deps.evaluate(evalArgs);
   } catch (err: unknown) {
     const error = err instanceof Error ? err.message : String(err);
     try {
@@ -125,12 +127,29 @@ export async function runDecisionMaker(signalId: string, deps: DecisionMakerDeps
     return { kind: 'failed', error };
   }
 
+  // Escalación DELIBERADA (SP10): el código decide, no el modelo. Best-effort: Opus falla → Sonnet + audit.
+  let finalVerdict = first.verdict, finalModel = first.modelUsed, finalTokens = first.tokens;
+  let escalated = false;
+  if (deps.shouldEscalate(first.verdict, tech.read, fund.read)) {
+    try {
+      const esc = await deps.escalate(evalArgs);
+      finalVerdict = esc.verdict; finalModel = esc.modelUsed; finalTokens = esc.tokens; escalated = true;
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err.message : String(err);
+      const errorType = err instanceof Error ? err.name : 'unknown';
+      try {
+        await deps.audit({ eventType: 'escalation_failed', actor: 'decision-maker', payload: { signalId, error, errorType } });
+      } catch { /* best-effort */ }
+    }
+  }
+
   await deps.persist({
-    signalId, verdict: evaluated.verdict, confianza: evaluated.verdict.confianza,
-    razonamiento: evaluated.verdict.razonamiento, modelUsed: evaluated.modelUsed, tokens: evaluated.tokens,
+    signalId, verdict: finalVerdict, confianza: finalVerdict.confianza,
+    razonamiento: finalVerdict.razonamiento, modelUsed: finalModel, tokens: finalTokens,
     technicalRead: tech.read, technicalModel: tech.model, technicalTokens: tech.tokens,
     fundamentalRead: fund.read, fundamentalModel: fund.model, fundamentalTokens: fund.tokens,
     fundamentalStatus: fund.status, fundamentalFetchOk: fund.fetchOk,
+    escalated,
   });
-  return { kind: 'persisted', verdict: evaluated.verdict };
+  return { kind: 'persisted', verdict: finalVerdict };
 }
