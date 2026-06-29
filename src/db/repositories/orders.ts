@@ -24,6 +24,7 @@ export interface BracketLegInput {
   purpose: 'sl' | 'tp';
   parentId: string;
   mode: TradingMode;
+  exchangeOrderId?: string;   // SP12: id del leg en el exchange (testnet/live); null en sim
 }
 
 // Claim idempotente: INSERT ON CONFLICT DO NOTHING. Devuelve {id} si lo insertó, null si ya existía.
@@ -53,12 +54,17 @@ export async function insertBracketLeg(
 ): Promise<string> {
   const id = ulid();
   await exec(
-    `INSERT INTO kairos.orders (id, idempotency_key, decision_id, side, size, type, tif, purpose, parent_id, status, mode)
-     VALUES ($1, $2, $3, 'sell', $4, $5, NULL, $6, $7, 'pending', $8)
+    `INSERT INTO kairos.orders (id, idempotency_key, decision_id, side, size, type, tif, purpose, parent_id, status, mode, exchange_order_id)
+     VALUES ($1, $2, $3, 'sell', $4, $5, NULL, $6, $7, 'pending', $8, $9)
      ON CONFLICT (idempotency_key) DO NOTHING`,
-    [id, leg.idempotencyKey, leg.decisionId, leg.size, legType(leg.purpose), leg.purpose, leg.parentId, leg.mode],
+    [id, leg.idempotencyKey, leg.decisionId, leg.size, legType(leg.purpose), leg.purpose, leg.parentId, leg.mode, leg.exchangeOrderId ?? null],
   );
   return id;
+}
+
+// SP12: guarda el id de la orden en el exchange tras un fill real.
+export async function setOrderExchangeId(id: string, exchangeOrderId: string, exec: Executor = query): Promise<void> {
+  await exec(`UPDATE kairos.orders SET exchange_order_id = $2 WHERE id = $1`, [id, exchangeOrderId]);
 }
 
 export async function getOrderByIdempotencyKey(
