@@ -6,6 +6,7 @@ const EXPECTED_TABLES = [
   'strategies', 'signals', 'decisions', 'risk_evaluations', 'orders', 'fills',
   'positions', 'account_snapshots', 'pending_approvals', 'audit_log',
   'ohlcv_candles', 'funding_rates', 'open_interest', 'liquidations', 'backtest_runs',
+  'shadow_verdicts',
 ];
 
 beforeAll(async () => {
@@ -17,7 +18,7 @@ afterAll(async () => {
 });
 
 describe('migrate', () => {
-  test('crea las 15 tablas del esquema kairos', async () => {
+  test('crea las 16 tablas del esquema kairos', async () => {
     const rows = await query<{ table_name: string }>(
       `SELECT table_name FROM information_schema.tables WHERE table_schema = 'kairos'`,
     );
