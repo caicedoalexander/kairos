@@ -28,17 +28,31 @@ describe('shadow_verdicts repo', () => {
     await insertShadowVerdict({
       signalId, verdict: { action: 'enter', entry: 100, sl: 97, tp: 106, sizingFactor: 1, confianza: 'media', razonamiento: 'x' },
       confianza: 'media', razonamiento: 'x', modelUsed: 'anthropic/claude-sonnet-4-6', tokens: 1234,
-      technicalRead: { bias: 'bullish', confluence: 'strong', regime: 'trending', divergence: 'none', mtfNote: 'm', notes: 'n' },
-      technicalModel: 'anthropic/claude-haiku-4-5', technicalTokens: 321,
+      technicalRead: { bias: 'bullish' }, technicalModel: 'anthropic/claude-haiku-4-5', technicalTokens: 321,
+      fundamentalRead: { bias: 'bearish', catalysts: [], positioning: 'crowded_long', confidence: 'alta' },
+      fundamentalModel: 'anthropic/claude-haiku-4-5', fundamentalTokens: 222, fundamentalStatus: 'ran', fundamentalFetchOk: true,
     });
     expect(await isAlreadyEvaluated(signalId)).toBe(true);
     const row = await getShadowVerdict(signalId);
-    expect(row?.modelUsed).toBe('anthropic/claude-sonnet-4-6');
-    expect(row?.tokens).toBe(1234);
-    expect((row?.verdict as { action: string }).action).toBe('enter');
-    expect((row?.technicalRead as { bias: string }).bias).toBe('bullish');
-    expect(row?.technicalModel).toBe('anthropic/claude-haiku-4-5');
-    expect(row?.technicalTokens).toBe(321);
+    expect((row?.fundamentalRead as { bias: string }).bias).toBe('bearish');
+    expect(row?.fundamentalModel).toBe('anthropic/claude-haiku-4-5');
+    expect(row?.fundamentalTokens).toBe(222);
+    expect(row?.fundamentalStatus).toBe('ran');
+    expect(row?.fundamentalFetchOk).toBe(true);
+  });
+
+  test('fundamental omitido: read null + status + fetch_ok null se persisten', async () => {
+    const signalId = await seedSignal();
+    await insertShadowVerdict({
+      signalId, verdict: {}, confianza: 'baja', razonamiento: null, modelUsed: 'm', tokens: null,
+      technicalRead: null, technicalModel: null, technicalTokens: null,
+      fundamentalRead: null, fundamentalModel: null, fundamentalTokens: null,
+      fundamentalStatus: 'skipped_not_major', fundamentalFetchOk: null,
+    });
+    const row = await getShadowVerdict(signalId);
+    expect(row?.fundamentalRead).toBeNull();
+    expect(row?.fundamentalStatus).toBe('skipped_not_major');
+    expect(row?.fundamentalFetchOk).toBeNull();
   });
 
   test('analista degradado: technical_* null se persiste y se lee como null', async () => {
@@ -46,6 +60,7 @@ describe('shadow_verdicts repo', () => {
     await insertShadowVerdict({
       signalId, verdict: {}, confianza: 'baja', razonamiento: null, modelUsed: 'm', tokens: null,
       technicalRead: null, technicalModel: null, technicalTokens: null,
+      fundamentalRead: null, fundamentalModel: null, fundamentalTokens: null, fundamentalStatus: null, fundamentalFetchOk: null,
     });
     const row = await getShadowVerdict(signalId);
     expect(row?.technicalRead).toBeNull();
@@ -56,9 +71,11 @@ describe('shadow_verdicts repo', () => {
   test('ON CONFLICT DO NOTHING: reinsertar la misma señal no duplica ni lanza', async () => {
     const signalId = await seedSignal();
     await insertShadowVerdict({ signalId, verdict: {}, confianza: 'alta', razonamiento: null, modelUsed: 'm', tokens: null,
-      technicalRead: null, technicalModel: null, technicalTokens: null });
+      technicalRead: null, technicalModel: null, technicalTokens: null,
+      fundamentalRead: null, fundamentalModel: null, fundamentalTokens: null, fundamentalStatus: null, fundamentalFetchOk: null });
     await insertShadowVerdict({ signalId, verdict: {}, confianza: 'baja', razonamiento: null, modelUsed: 'm2', tokens: null,
-      technicalRead: null, technicalModel: null, technicalTokens: null });
+      technicalRead: null, technicalModel: null, technicalTokens: null,
+      fundamentalRead: null, fundamentalModel: null, fundamentalTokens: null, fundamentalStatus: null, fundamentalFetchOk: null });
     const rows = await query(`SELECT confianza FROM kairos.shadow_verdicts WHERE signal_id=$1`, [signalId]);
     expect(rows.length).toBe(1);
     expect((rows[0] as { confianza: string }).confianza).toBe('alta'); // la primera gana

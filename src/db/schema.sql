@@ -28,23 +28,34 @@ CREATE INDEX IF NOT EXISTS signals_symbol_fired_at_idx ON kairos.signals (symbol
 -- SP7: veredictos del decision-maker LLM en SOMBRA (Fase 2). Append-first; UNIQUE(signal_id)
 -- deduplica el shadow eval al reintentar. Separada de `decisions` (camino determinista).
 CREATE TABLE IF NOT EXISTS kairos.shadow_verdicts (
-  id               text PRIMARY KEY,
-  signal_id        text NOT NULL REFERENCES kairos.signals(id),
-  verdict          jsonb NOT NULL,
-  confianza        text NOT NULL,
-  razonamiento     text,
-  model_used       text,
-  tokens           integer,
-  technical_read   jsonb,      -- TechnicalRead del analista; null si degradado
-  technical_model  text,       -- model.provider/id del analista
-  technical_tokens integer,    -- usage del analista
-  created_at       timestamptz NOT NULL DEFAULT now(),
+  id                 text PRIMARY KEY,
+  signal_id          text NOT NULL REFERENCES kairos.signals(id),
+  verdict            jsonb NOT NULL,
+  confianza          text NOT NULL,
+  razonamiento       text,
+  model_used         text,
+  tokens             integer,
+  technical_read     jsonb,      -- TechnicalRead del analista; null si degradado
+  technical_model    text,       -- model.provider/id del analista
+  technical_tokens   integer,    -- usage del analista
+  fundamental_read   jsonb,      -- FundamentalRead; null si no corrió (SP9)
+  fundamental_model  text,
+  fundamental_tokens integer,
+  fundamental_status text,       -- ran | skipped_not_major | skipped_quiet | skipped_fetch_failed | failed
+  fundamental_fetch_ok boolean,  -- salud del fetch (null = no se intentó)
+  created_at         timestamptz NOT NULL DEFAULT now(),
   UNIQUE (signal_id)
 );
 -- Upgrade idempotente para DBs creadas antes de SP8:
 ALTER TABLE kairos.shadow_verdicts ADD COLUMN IF NOT EXISTS technical_read   jsonb;
 ALTER TABLE kairos.shadow_verdicts ADD COLUMN IF NOT EXISTS technical_model  text;
 ALTER TABLE kairos.shadow_verdicts ADD COLUMN IF NOT EXISTS technical_tokens integer;
+-- Upgrade idempotente para DBs creadas antes de SP9:
+ALTER TABLE kairos.shadow_verdicts ADD COLUMN IF NOT EXISTS fundamental_read     jsonb;
+ALTER TABLE kairos.shadow_verdicts ADD COLUMN IF NOT EXISTS fundamental_model    text;
+ALTER TABLE kairos.shadow_verdicts ADD COLUMN IF NOT EXISTS fundamental_tokens   integer;
+ALTER TABLE kairos.shadow_verdicts ADD COLUMN IF NOT EXISTS fundamental_status   text;
+ALTER TABLE kairos.shadow_verdicts ADD COLUMN IF NOT EXISTS fundamental_fetch_ok boolean;
 
 -- Razonamiento explícito del decision-maker (append-only).
 CREATE TABLE IF NOT EXISTS kairos.decisions (
