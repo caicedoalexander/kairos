@@ -10,6 +10,7 @@ export interface OpenPositionInput {
   tp: number;
   strategyId: string;
   mode: TradingMode;
+  protected: boolean;    // SP12: requerido. sim=true (monitor paper); real=false→true tras OCO confirmado.
   entryFee?: number;     // SP6: fee de entrada (default 0 para llamadores legacy/tests)
   decisionId?: string;   // SP6: link a la decisión (legs OCO + reconciler)
 }
@@ -23,11 +24,16 @@ export interface Exposure {
 export async function openPosition(p: OpenPositionInput, exec: Executor = query): Promise<string> {
   const id = ulid();
   await exec(
-    `INSERT INTO kairos.positions (id, symbol, side, entry, size, sl, tp, status, strategy_id, mode, entry_fee, decision_id)
-     VALUES ($1, $2, 'long', $3, $4, $5, $6, 'open', $7, $8, $9, $10)`,
-    [id, p.symbol, p.entry, p.size, p.sl, p.tp, p.strategyId, p.mode, p.entryFee ?? 0, p.decisionId ?? null],
+    `INSERT INTO kairos.positions (id, symbol, side, entry, size, sl, tp, status, strategy_id, mode, entry_fee, decision_id, protected)
+     VALUES ($1, $2, 'long', $3, $4, $5, $6, 'open', $7, $8, $9, $10, $11)`,
+    [id, p.symbol, p.entry, p.size, p.sl, p.tp, p.strategyId, p.mode, p.entryFee ?? 0, p.decisionId ?? null, p.protected],
   );
   return id;
+}
+
+// SP12: marca/desmarca la protección OCO confirmada de una posición.
+export async function setPositionProtected(id: string, value: boolean, exec: Executor = query): Promise<void> {
+  await exec(`UPDATE kairos.positions SET protected = $2 WHERE id = $1`, [id, value]);
 }
 
 /** @deprecated SP6: usa closeOpenPosition (idempotente) + closeBracketLegs para no dejar legs OCO huérfanas. */

@@ -132,6 +132,9 @@ CREATE TABLE IF NOT EXISTS kairos.positions (
 -- a su decisión/órdenes (cerrar legs OCO al salir + reconciler). Idempotente (ADD COLUMN IF NOT EXISTS).
 ALTER TABLE kairos.positions ADD COLUMN IF NOT EXISTS entry_fee numeric NOT NULL DEFAULT 0;
 ALTER TABLE kairos.positions ADD COLUMN IF NOT EXISTS decision_id text REFERENCES kairos.decisions(id);
+-- SP12: marcador durable de protección OCO (false en real hasta que el OCO residente se confirma;
+-- true en sim porque el monitor paper actúa de guardián). Default pesimista = false.
+ALTER TABLE kairos.positions ADD COLUMN IF NOT EXISTS protected boolean NOT NULL DEFAULT false;
 
 -- SP6: dedup per-setup. Una sola posición viva por (strategy, symbol, mode). Race-safe por
 -- construcción (igual que UNIQUE(idempotency_key) en orders). Parcial: solo aplica a 'open'.

@@ -50,7 +50,7 @@ export async function executeOrderSim(p: ExecuteOrderSimParams): Promise<Executi
       await insertFill({ orderId: claimed.id, price: fill.fillPrice, qty: fill.qty, fee: fill.fee }, exec);
       const positionId = await openPosition(
         { symbol: p.symbol, entry: fill.fillPrice, size: fill.qty, sl: p.decision.verdict.sl, tp: p.decision.verdict.tp,
-          strategyId: p.strategy.id, mode: p.mode, entryFee: fill.fee, decisionId: p.decision.id },
+          strategyId: p.strategy.id, mode: p.mode, entryFee: fill.fee, decisionId: p.decision.id, protected: true },
         exec,
       );
       await updateOrderStatus(claimed.id, 'filled', exec);

@@ -32,9 +32,9 @@ afterAll(async () => {
 
 describe('positions', () => {
   test('getExposure suma el notional del símbolo (entry*size) y aísla por símbolo', async () => {
-    await openPosition({ symbol: SYMBOL, entry: 100, size: 2, sl: 95, tp: 110, strategyId: STRATEGY_ID, mode: 'sim' });   // 200
-    await openPosition({ symbol: SYMBOL, entry: 100, size: 3, sl: 95, tp: 110, strategyId: STRATEGY_ID_2, mode: 'sim' }); // 300 (otra estrategia → no viola el índice)
-    await openPosition({ symbol: OTHER, entry: 50, size: 1, sl: 48, tp: 55, strategyId: STRATEGY_ID, mode: 'sim' });      // 50
+    await openPosition({ symbol: SYMBOL, entry: 100, size: 2, sl: 95, tp: 110, strategyId: STRATEGY_ID, mode: 'sim', protected: true });   // 200
+    await openPosition({ symbol: SYMBOL, entry: 100, size: 3, sl: 95, tp: 110, strategyId: STRATEGY_ID_2, mode: 'sim', protected: true }); // 300 (otra estrategia → no viola el índice)
+    await openPosition({ symbol: OTHER, entry: 50, size: 1, sl: 48, tp: 55, strategyId: STRATEGY_ID, mode: 'sim', protected: true });      // 50
     const exp = await getExposure('sim', SYMBOL);
     expect(exp.openNotionalSymbol).toBe(500);                  // exacto, aislado por símbolo
     expect(exp.openNotionalTotal).toBeGreaterThanOrEqual(550); // incluye OTHER y posibles de otros archivos
@@ -42,9 +42,9 @@ describe('positions', () => {
   });
 
   test('closePosition marca cerrada con realized_pnl; getConsecutiveLosses cuenta la racha por estrategia', async () => {
-    const id = await openPosition({ symbol: SYMBOL, entry: 100, size: 1, sl: 95, tp: 110, strategyId: STRATEGY_ID, mode: 'sim' });
+    const id = await openPosition({ symbol: SYMBOL, entry: 100, size: 1, sl: 95, tp: 110, strategyId: STRATEGY_ID, mode: 'sim', protected: true });
     await closePosition(id, -5, new Date('2026-03-04T00:00:00Z'));
-    const id2 = await openPosition({ symbol: SYMBOL, entry: 100, size: 1, sl: 95, tp: 110, strategyId: STRATEGY_ID, mode: 'sim' });
+    const id2 = await openPosition({ symbol: SYMBOL, entry: 100, size: 1, sl: 95, tp: 110, strategyId: STRATEGY_ID, mode: 'sim', protected: true });
     await closePosition(id2, -3, new Date('2026-03-04T01:00:00Z'));
     expect(await getConsecutiveLosses('sim', STRATEGY_ID)).toBe(2);
     const closed = await query<{ status: string; realized_pnl: string }>('SELECT status, realized_pnl FROM kairos.positions WHERE id = $1', [id2]);
@@ -53,7 +53,7 @@ describe('positions', () => {
   });
 
   test('getConsecutiveLosses se rompe en el primer cierre no perdedor', async () => {
-    const idWin = await openPosition({ symbol: SYMBOL, entry: 100, size: 1, sl: 95, tp: 110, strategyId: STRATEGY_ID, mode: 'sim' });
+    const idWin = await openPosition({ symbol: SYMBOL, entry: 100, size: 1, sl: 95, tp: 110, strategyId: STRATEGY_ID, mode: 'sim', protected: true });
     await closePosition(idWin, 7, new Date('2026-03-04T02:00:00Z')); // cierre ganador más reciente
     expect(await getConsecutiveLosses('sim', STRATEGY_ID)).toBe(0);
   });
@@ -63,21 +63,21 @@ describe('positions', () => {
   });
 
   test('openPosition sin entryFee/decisionId usa defaults (0 / null)', async () => {
-    const id = await openPosition({ symbol: OTHER, entry: 10, size: 1, sl: 9, tp: 12, strategyId: STRATEGY_ID, mode: 'sim' });
+    const id = await openPosition({ symbol: OTHER, entry: 10, size: 1, sl: 9, tp: 12, strategyId: STRATEGY_ID, mode: 'sim', protected: true });
     const rows = await query<{ entry_fee: string; decision_id: string | null }>('SELECT entry_fee, decision_id FROM kairos.positions WHERE id = $1', [id]);
     expect(Number(rows[0].entry_fee)).toBe(0);
     expect(rows[0].decision_id).toBeNull();
   });
 
   test('hasOpenPositionForSetup distingue setups y modos', async () => {
-    await openPosition({ symbol: SYMBOL, entry: 100, size: 1, sl: 95, tp: 110, strategyId: STRATEGY_ID, mode: 'sim' });
+    await openPosition({ symbol: SYMBOL, entry: 100, size: 1, sl: 95, tp: 110, strategyId: STRATEGY_ID, mode: 'sim', protected: true });
     expect(await hasOpenPositionForSetup(STRATEGY_ID, SYMBOL, 'sim')).toBe(true);
     expect(await hasOpenPositionForSetup(STRATEGY_ID, OTHER, 'sim')).toBe(false);
     expect(await hasOpenPositionForSetup(STRATEGY_ID, SYMBOL, 'testnet')).toBe(false);
   });
 
   test('closeOpenPosition cierra solo si está open (idempotente)', async () => {
-    const id = await openPosition({ symbol: SYMBOL, entry: 100, size: 1, sl: 95, tp: 110, strategyId: STRATEGY_ID, mode: 'sim' });
+    const id = await openPosition({ symbol: SYMBOL, entry: 100, size: 1, sl: 95, tp: 110, strategyId: STRATEGY_ID, mode: 'sim', protected: true });
     expect(await closeOpenPosition(id, -7, new Date('2026-03-09T00:00:00Z'))).toBe(true);
     expect(await closeOpenPosition(id, -7, new Date('2026-03-09T00:00:00Z'))).toBe(false); // ya cerrada
     const rows = await query<{ status: string; realized_pnl: string }>('SELECT status, realized_pnl FROM kairos.positions WHERE id = $1', [id]);
@@ -86,7 +86,7 @@ describe('positions', () => {
   });
 
   test('getOpenPositions trae datos del monitor (entryFee, triggerTimeframe) y aísla por modo', async () => {
-    await openPosition({ symbol: SYMBOL, entry: 100, size: 2, sl: 95, tp: 110, strategyId: STRATEGY_ID, mode: 'sim', entryFee: 0.5 });
+    await openPosition({ symbol: SYMBOL, entry: 100, size: 2, sl: 95, tp: 110, strategyId: STRATEGY_ID, mode: 'sim', entryFee: 0.5, protected: true });
     const open = await getOpenPositions('sim');
     const mine = open.find((p) => p.symbol === SYMBOL && p.strategyId === STRATEGY_ID);
     expect(mine).toBeDefined();

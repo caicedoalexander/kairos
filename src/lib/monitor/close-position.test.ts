@@ -94,7 +94,7 @@ describe('closePositionOnBracket', () => {
     );
     const posId = await openPosition({
       symbol: SYMBOL, entry: 100, size: 1, sl: 95, tp: 110,
-      strategyId: STRATEGY_ID, mode: 'sim', entryFee: 0,
+      strategyId: STRATEGY_ID, mode: 'sim', entryFee: 0, protected: true,
       // sin decisionId → null
     });
     const pos = {
