@@ -25,13 +25,11 @@ export type DecisionOutcome =
   | { kind: 'failed'; error: string };
 
 // Orquestación determinista del shadow eval: carga la señal/estrategia, llama al LLM (vía deps.evaluate
-// con failover), persiste el veredicto. Best-effort: un fallo del modelo se audita y NUNCA se propaga.
+// con failover), persiste el veredicto. Best-effort acotado: SOLO el fallo del modelo (deps.evaluate)
+// se traga y se audita como shadow_failed. Las deps de infraestructura
+// (getSignal/isAlreadyEvaluated/getStrategy/persist) propagan a propósito: un error de infra se registra
+// como un run de Flue fallido, no como un fallo de modelo.
 export async function runDecisionMaker(signalId: string, deps: DecisionMakerDeps): Promise<DecisionOutcome> {
-  // Best-effort acotado: SOLO el fallo del modelo (deps.evaluate) se traga y se audita como
-  // shadow_failed (es el modo de fallo esperado, que queremos visible en el dominio). Las deps de
-  // infraestructura (getSignal/isAlreadyEvaluated/getStrategy/persist) propagan a propósito: en el
-  // diseño fire-and-forget (el shadow worker hace invoke() y olvida), un error de infra se registra
-  // como un run de Flue fallido, no como un reintento. No envolver toda la función.
   const signal = await deps.getSignal(signalId);
   if (!signal) return { kind: 'not_found' };
   if (await deps.isAlreadyEvaluated(signalId)) return { kind: 'duplicate' };
@@ -45,12 +43,9 @@ export async function runDecisionMaker(signalId: string, deps: DecisionMakerDeps
     timeframes: strategy.triggerConfig.timeframes,
   };
 
+  let evaluated: { verdict: import('./verdict-schema.ts').LlmVerdict; modelUsed: string; tokens: number | null };
   try {
-    const { verdict, modelUsed, tokens } = await deps.evaluate(args);
-    await deps.persist({
-      signalId, verdict, confianza: verdict.confianza, razonamiento: verdict.razonamiento, modelUsed, tokens,
-    });
-    return { kind: 'persisted', verdict };
+    evaluated = await deps.evaluate(args);
   } catch (err: unknown) {
     const error = err instanceof Error ? err.message : String(err);
     try {
@@ -60,4 +55,12 @@ export async function runDecisionMaker(signalId: string, deps: DecisionMakerDeps
     }
     return { kind: 'failed', error };
   }
+
+  // persist FUERA del try: si la DB falla aquí, propaga (es infra, no fallo de modelo) y el run
+  // de Flue queda 'failed' — no se mal-etiqueta como shadow_failed (que es SOLO fallo de modelo).
+  await deps.persist({
+    signalId, verdict: evaluated.verdict, confianza: evaluated.verdict.confianza,
+    razonamiento: evaluated.verdict.razonamiento, modelUsed: evaluated.modelUsed, tokens: evaluated.tokens,
+  });
+  return { kind: 'persisted', verdict: evaluated.verdict };
 }

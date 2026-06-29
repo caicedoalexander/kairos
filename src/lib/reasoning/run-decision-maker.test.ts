@@ -57,4 +57,10 @@ describe('runDecisionMaker', () => {
     expect(r.kind).toBe('failed');
     expect(d.audit).toHaveBeenCalledWith(expect.objectContaining({ eventType: 'shadow_failed' }));
   });
+
+  test('fallo de persist propaga (no se traga como shadow_failed)', async () => {
+    const d = deps({ persist: async () => { throw new Error('DB caída'); } });
+    await expect(runDecisionMaker('sig1', d)).rejects.toThrow('DB caída');
+    expect(d.audit).not.toHaveBeenCalled(); // no se mal-etiqueta como shadow_failed
+  });
 });

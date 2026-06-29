@@ -7,8 +7,6 @@ import { getSignalById } from '../db/repositories/signals.ts';
 import { getStrategy } from '../db/repositories/strategies.ts';
 import { insertShadowVerdict, isAlreadyEvaluated } from '../db/repositories/shadow-verdicts.ts';
 import { appendAuditLog } from '../db/repositories/audit-log.ts';
-import { LlmVerdictSchema } from '../lib/reasoning/verdict-schema.ts';
-
 // Modelos por env (§9): no hardcodear el id exacto de Opus. Si no hay escalación, el failover
 // reintenta el mismo modelo (resiliencia ante error transitorio de proveedor).
 const DECISION_MODEL = process.env.DECISION_MODEL ?? 'anthropic/claude-sonnet-4-6';
