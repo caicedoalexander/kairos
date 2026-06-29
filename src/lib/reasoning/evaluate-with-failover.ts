@@ -12,7 +12,7 @@ export interface SkillSession {
 
 // Extrae el total de tokens de PromptUsage (`totalTokens` es el campo documentado; los fallbacks
 // son conservadores ante versiones futuras).
-function extractTokens(usage: unknown): number | null {
+export function extractTokens(usage: unknown): number | null {
   if (typeof usage !== 'object' || usage === null) return null;
   const u = usage as Record<string, unknown>;
   const t = u.totalTokens ?? u.total_tokens ?? u.tokens;
