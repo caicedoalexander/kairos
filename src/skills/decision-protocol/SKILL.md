@@ -53,6 +53,10 @@ Emite **solo** el objeto estructurado pedido (sin prosa libre fuera de `razonami
 - `sizingFactor`: en `[0,1]`. Reduce ante cautela (divergencia, contra-tendencia, derivados
   extremos). Nunca lo subas por encima de tu convicción real: un risk gate determinista lo capará
   de todas formas.
+- Para fijar `sizingFactor` y `confianza`, **aplica la doctrina del skill `risk-policy`**: reduce el
+  tamaño ante divergencia, MTF no alineado, posicionamiento hacinado (`crowded_long`), baja confluencia
+  o reads contradictorios; nunca por encima de tu convicción real. Los límites duros los capa el risk
+  gate determinista — tu trabajo es calibrar con prudencia.
 - `confianza`: `alta`/`media`/`baja`.
 - `razonamiento`: 1–3 frases justificando el veredicto con la evidencia concreta.
 

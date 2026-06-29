@@ -20,11 +20,10 @@ export function extractTokens(usage: unknown): number | null {
 }
 
 // Llama al skill decision-protocol probando los modelos en orden; devuelve el primer éxito.
-// Failover = resiliencia ante error de proveedor o ResultUnavailableError (Sonnet→Opus si se
-// configuró DECISION_MODEL_ESCALATION; si no, reintenta el mismo modelo).
-// SP7: ambos intentos comparten la `session`; si el primero falla con ResultUnavailableError, el
-// turno fallido queda en el historial y llega al reintento. Tolerable en sombra/best-effort; la
-// sesión fresca por intento (sessionFactory) se introduce en SP10 cuando el failover pese más.
+// SP10: la pasada Opus de escalación usa una sesión dedicada (`escSession`) para juicio limpio.
+// El failover Sonnet→Sonnet (mismo modelo, solo resiliencia ante blip) sigue compartiendo `session`
+// — tolerable en sombra/best-effort; la sesión fresca por intento del failover queda como deuda
+// diferida (no necesaria mientras escalación y resiliencia están separadas).
 export async function evaluateWithFailover(
   session: SkillSession, args: Record<string, unknown>, models: string[],
 ): Promise<{ verdict: LlmVerdict; modelUsed: string; tokens: number | null }> {

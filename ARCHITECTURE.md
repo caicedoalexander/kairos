@@ -295,9 +295,13 @@ export default postgres(process.env.DATABASE_URL!);
 
 `shouldEscalate` = verdadero cuando: notional > X% del equity, **o** primera operación live de una estrategia nueva, **o** (tras pasada Sonnet) confianza = baja, **o** los analistas se contradicen.
 
+**(SP10)** En sombra solo aplican confianza-baja y contradicción-de-analistas (no hay equity disponible en `ShadowEvalArgs`); notional y primera-op-live se cablean con equity en testnet/live.
+
 ### Resiliencia
 
 Flue **no trae failover de modelo**. La orquestación envuelve la llamada y reintenta en un modelo alterno ante error de proveedor (Sonnet→Opus, o secundario vía `registerProvider`).
+
+**(SP10)** La resiliencia reintenta el **mismo** modelo; la escalación a Opus es una **segunda pasada deliberada** gobernada por `shouldEscalate` (no un fallback de resiliencia).
 
 ### Forma del costo por candidato
 
