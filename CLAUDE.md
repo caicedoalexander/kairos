@@ -64,6 +64,20 @@ Progreso por sprints (SP):
   `docs/superpowers/plans/2026-06-28-sp9-analista-fundamental.md`.
   *Pendiente operativo: poblar `CRYPTOPANIC_API_KEY` en `.env` para activar el camino de noticias
   (hoy degrada a `[]` y el gate solo abre por derivados extremos).*
+- **SP10 (hecho) — cierre del núcleo de Fase 2:** (1) **escalación determinista Sonnet→Opus** —
+  `shouldEscalate` (puro: confianza baja **O** analistas opuestos) dispara una **segunda pasada
+  deliberada** con Opus sobre una sesión dedicada `harness.session('escalation')`; **el código decide,
+  no el modelo**. Resiliencia (reintenta el mismo modelo ante blip) y escalación quedan separadas
+  (se retiró `DECISION_MODEL_ESCALATION`; ahora `ESCALATION_MODEL ?? anthropic/claude-opus-4-6`).
+  Best-effort: Opus falla → degrada a Sonnet + audit `escalation_failed`; persiste `escalated`.
+  (2) **skill `risk-policy`** — doctrina cualitativa de cautela/sizing registrada junto a
+  `decision-protocol` (los límites duros siguen en `check_risk`). (3) **medición A/B** — CLI read-only
+  `npm run shadow-report` que une `shadow_verdicts` (LLM) ⨝ `decisions` (determinista) ⨝ `positions`
+  (P&L) por señal y reporta acuerdo de acción (4 cuadrantes), escalación, y `sizingEdge` (acotado: solo
+  mide sizing, no la divergencia SL/TP del LLM). Validado con smoke vivo: la pasada **Opus corrió**
+  (`escalated=true`, `model_used=opus`), risk-policy movió el sizing, y el reporte contó la escalación.
+  Plan en `docs/superpowers/plans/2026-06-29-sp10-escalacion-riskpolicy-ab.md`. **Fase 2 núcleo
+  (SP7→SP10) COMPLETA en sombra; queda SP11 (control WhatsApp, separable).**
 
 > Pendientes antes de **testnet** (no de sim): OCO residente en el exchange (SL/TP inmediato real, no
 > polling por cierre de vela), lock Redis por candidato (§273), reconciler con `fetch` de ccxt, y
