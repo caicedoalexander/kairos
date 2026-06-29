@@ -584,7 +584,7 @@ git commit -m "feat(sp12): precision.ts (cap, stop-limit offset, fee-en-base, m�
 import { describe, test, expect, vi } from 'vitest';
 import { placeEntry } from './place-entry.ts';
 
-const market = { id: 'BTCUSDT', base: 'BTC', limits: { amount: { min: 0.0001 }, cost: { min: 10 } } };
+const market = { id: 'BTCUSDT', base: 'BTC', limits: { amount: { min: 0.0001 }, cost: { min: 1 } } };
 function client(order: unknown, capture?: (args: unknown[]) => void) {
   return {
     market: () => market,
@@ -602,12 +602,13 @@ describe('placeEntry', () => {
     expect(r).toEqual({ belowMin: false, filledQty: 0.01, avgPrice: 100.04, fee: 0.00001, feeBase: 0.00001, exchangeOrderId: '777' });
     // cap = 100·1.0005 = 100.05 (priceToPrecision → "100.05"); IOC
     expect(captured[0]).toBe('BTC/USDT'); expect(captured[1]).toBe('limit'); expect(captured[2]).toBe('buy');
-    expect(captured[4]).toBe('100.05'); expect((captured[5] as { timeInForce: string }).timeInForce).toBe('IOC');
+    expect(captured[3]).toBe(0.01);                  // amount con precisión aplicada
+    expect(captured[4]).toBe(100.05); expect((captured[5] as { timeInForce: string }).timeInForce).toBe('IOC'); // cap NUMBER (compat ccxt real)
   });
 
   test('size por debajo del mínimo de notional → { belowMin: true } sin tocar el exchange', async () => {
     const c = client({});
-    const r = await placeEntry(c, { symbol: 'BTC/USDT', size: 0.00001, refPrice: 100, slippageBps: 5 }); // notional 0.001 < 10
+    const r = await placeEntry(c, { symbol: 'BTC/USDT', size: 0.00001, refPrice: 100, slippageBps: 5 }); // notional 0.001 < 1 (cost.min)
     expect(r).toEqual({ belowMin: true });
     expect(c.createOrder).not.toHaveBeenCalled();
   });
