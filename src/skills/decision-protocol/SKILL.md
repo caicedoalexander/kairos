@@ -17,6 +17,10 @@ mismo.
   (`aligned`/`mixed`/`counter`), `levels` (soporte/resistencia), `derivatives` (funding/OI).
 - `riskParams`: parámetros de riesgo de la estrategia (incluye `atr_stop_mult`, `tp_r_multiple`).
 - `timeframes`: `{ bias, context, trigger }`.
+- `technical_read` *(opcional)*: lectura cualitativa de un analista técnico que ya interpretó el
+  snapshot (`bias`, `confluence`, `regime`, `divergence`, `mtfNote`, `notes`). Es **un insumo más**,
+  no un oráculo: pésalo junto a tu propia lectura del snapshot. Si **no** viene (analista degradado),
+  razona sobre el snapshot directamente como siempre.
 
 ## Cómo razonar
 
@@ -48,3 +52,8 @@ Ante evidencia insuficiente o contradictoria, prefiere `skip` con `confianza: ba
 
 Cuando `action` sea `skip`, emite igualmente `entry`, `sl` y `tp` con valor `0` (la capa
 determinista los ignora en un skip; lo relevante es `razonamiento` y `confianza`).
+
+## Importante
+
+El `technical_read`, cuando existe, **ya viene en `args`**. **No** delegues ni invoques ningún
+subagente: tu trabajo es sintetizar el veredicto con la evidencia que ya tienes.
