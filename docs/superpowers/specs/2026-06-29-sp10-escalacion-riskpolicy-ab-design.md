@@ -32,10 +32,15 @@ Tres entregables que cierran el razonamiento:
 
 > Verificados contra `node_modules/@flue/runtime/docs/` (skills.md, agent-api.md, subagents.md).
 
-- **Skills compuestos:** los skills registrados en `skills:[]` del agente están **disponibles**
-  ("you can trust the agent to use the skills you provide it, as needed", skills.md). El disclosure
-  es por `name`/`description`. Así, registrar `risk-policy` junto a `decision-protocol` y que este
-  instruya aplicarla es el patrón correcto; el modelo la usa al sintetizar.
+- **Skills compuestos (SUPUESTO a validar, H2):** los skills registrados en `skills:[]` están
+  *disponibles por disclosure* ("makes the skills available to this agent by their declared names";
+  "you can trust the agent to use the skills you provide it, as needed", skills.md:48,93). Lo que la
+  doc **NO** garantiza explícitamente es que, durante `session.skill('decision-protocol', { result })`
+  (generación restringida a un esquema Valibot, agente con `tools:[]`), el modelo cargue de forma
+  autónoma el cuerpo de un segundo skill registrado en el mismo turno. Es plausible (los skills no
+  requieren tools) pero no está documentado. → Se trata como **supuesto validado por el smoke**
+  (criterio de éxito); **fallback trivial si falla:** incrustar la doctrina de cautela directamente
+  en `decision-protocol/SKILL.md` (un solo skill, sin auto-load). Ver Pieza 2.
 - `session.skill(name, { args, result, model })` con `model` override por operación → permite la
   pasada Opus deliberada reusando el mismo skill `decision-protocol`.
 - Persistencia de dominio en esquema `kairos` (Flue no la maneja).
@@ -49,12 +54,13 @@ import type { LlmVerdict } from './verdict-schema.ts';
 import type { TechnicalRead } from './technical-read-schema.ts';
 import type { FundamentalRead } from './fundamental-read-schema.ts';
 
-// Escalación = decisión DETERMINISTA (el código, no el modelo). En sombra/sim solo aplican las
-// condiciones evaluables sin equity/posición real:
+// Escalación = decisión DETERMINISTA (el código, no el modelo). En sombra solo aplican las
+// condiciones que el camino sombra cablea:
 //   - confianza de la pasada Sonnet == 'baja', O
 //   - los analistas se contradicen (technical.bias vs fundamental.bias estrictamente opuestos).
-// Diferidos a testnet/live (necesitan contexto real): notional > X% equity, primera op live de
-// estrategia nueva.
+// Diferidos a testnet/live (L1): notional > X% equity y primera-op-live de estrategia nueva. NO es
+// que sean incomputables en sim (el equity existe en account_snapshots) — es que ShadowEvalArgs no
+// cablea equity/estado de cuenta, y "primera op live" no existe en sombra. Se añaden al cablear equity.
 export function shouldEscalate(
   verdict: LlmVerdict, technicalRead: TechnicalRead | null, fundamentalRead: FundamentalRead | null,
 ): boolean {
@@ -82,13 +88,19 @@ else:
 persist(final.verdict, model_used = final.modelUsed, escalated, ... reads ...)
 ```
 
-- **Resiliencia vs escalación separadas:** la pasada Sonnet usa failover de resiliencia que reintenta
-  **el mismo modelo** ante error de proveedor (ya NO Opus — eso conflaba resiliencia con escalación).
-  La escalación es una **segunda llamada deliberada** a Opus, gobernada por `shouldEscalate`.
+- **Resiliencia vs escalación separadas (M2):** hoy `decision-maker.ts` arma
+  `MODELS = [DECISION_MODEL, DECISION_MODEL_ESCALATION]` que `evaluateWithFailover` consume como
+  failover Sonnet→Opus — **exactamente la conflación que SP10 elimina**. El plan debe: (a) cambiar la
+  resiliencia a reintentar el **mismo** modelo (`MODELS = [DECISION_MODEL, DECISION_MODEL]`), (b)
+  introducir el dep `escalate` separado que llama con `ESCALATION_MODEL`, (c) **retirar**
+  `DECISION_MODEL_ESCALATION` y su rama. Así resiliencia (mismo modelo ante blip) y escalación
+  (Opus deliberado) quedan desacopladas.
 - **Best-effort:** si la pasada Opus falla, se degrada al veredicto de Sonnet (`escalated=false` +
   audit `escalation_failed`) — nunca rompe el shadow. El fallo de la pasada Sonnet sigue → `shadow_failed`.
-- Modelos por env: `DECISION_MODEL ?? sonnet`; `ESCALATION_MODEL ?? 'anthropic/claude-opus-4-...'`
-  (el id exacto de Opus se verifica en `flue dev`, §9; configurable por env, no hardcodeado a un id frágil).
+- **Modelo de escalación (M3):** `ESCALATION_MODEL ?? 'anthropic/claude-opus-4-6'` — un id **concreto**
+  por default (el id exacto de Opus se confirma en `flue dev` contra el catálogo de Pi, §292;
+  overridable por env). **Nunca** un literal con elipsis (reventaría en runtime y la degradación lo
+  enmascararía como best-effort en vez de error de config). El smoke valida que el id resuelve.
 
 ### Persistencia
 
@@ -100,6 +112,12 @@ refleja el modelo final (Sonnet u Opus).
 `src/skills/risk-policy/SKILL.md` — doctrina **cualitativa** de cautela/sizing para el decision-maker
 (§151). Registrada en `decisionAgent.skills:[decisionProtocol, riskPolicy]`. `decision-protocol`
 instruye: "aplica la doctrina de risk-policy para fijar `sizingFactor` y `confianza`".
+
+> **Validación (H2):** el smoke verifica que `risk-policy` realmente mueve `sizingFactor`/`confianza`
+> (p. ej. un candidato con divergencia/hacinamiento debe bajar el sizing). **Si el smoke muestra que
+> el segundo skill no se aplica** (no auto-carga durante el turno de `decision-protocol`), el fallback
+> es **incrustar la doctrina en `decision-protocol/SKILL.md`** y no registrar un skill aparte — cambio
+> trivial que elimina la dependencia del auto-load. El plan debe contemplar ambos caminos.
 
 Contenido (sin pesos numéricos hardcodeados; los límites duros viven en `check_risk` determinista):
 - **Reduce sizing** ante: divergencia precio/momentum, MTF `counter`/`mixed`, `positioning:
@@ -113,42 +131,61 @@ Contenido (sin pesos numéricos hardcodeados; los límites duros viven en `check
 
 ## Pieza 3 — Medición A/B (reporte read-only)
 
-### Sustrato (ya existe)
+### Sustrato (ya existe) — invariante clave (H1)
 
 Por `signal_id`:
-- `kairos.decisions` (determinista, `model_used='deterministic'`, `verdict` jsonb).
-- `kairos.shadow_verdicts` (LLM, `verdict` jsonb + reads + `escalated`).
-- `kairos.positions` (`decision_id` → la decisión determinista; `realized_pnl`, `closed_at`) para el
-  resultado en `sim`.
+- `kairos.shadow_verdicts` (LLM, `verdict` jsonb + reads + `escalated`) — **se persiste para CADA
+  señal evaluada**, tanto si el LLM dice `enter` como `skip` (`runDecisionMaker` no hace early-return).
+- `kairos.decisions` (determinista) — **OJO: solo se persiste cuando el veredicto determinista es
+  `enter`**. `evaluateCandidate` hace early-return en `skip` y en dedup **antes** de `persistDecision`
+  (`orchestration/evaluate-candidate.ts`). Por tanto: **fila en `decisions` ⟺ el determinista quiso
+  entrar; ausencia de fila = el determinista NO entró (skip, dedup, o no-evaluado)**.
+- `kairos.positions` (`decision_id` → la decisión determinista; `realized_pnl`, `closed_at`,
+  `status`) para el resultado en `sim`.
+
+**Anclaje correcto del join (H1):** anclar en `shadow_verdicts` (que tiene enter **y** skip del LLM),
+`LEFT JOIN decisions ON signal_id`, `LEFT JOIN positions ON positions.decision_id = decisions.id`.
+Derivar `detAction = (fila decisions presente) ? 'enter' : 'skip'`. Anclar en `decisions` (inner join)
+sería **ciego a los skip deterministas** → no podría computar `agreeSkip` ni `llmEnterDetSkip` y
+sesgaría el `agreementRate`. La convención "ausencia de decisión = no-entró" se documenta en el
+reporte (hoy verdadera; frágil si en el futuro se persisten decisiones de skip explícitas).
 
 ### Componentes
 
 1. **`src/db/repositories/shadow-report-query.ts`** — `getShadowVsDeterministic(exec?)` →
-   `ABRow[]` con, por señal con ambos veredictos: `signalId`, `detVerdict`, `llmVerdict`,
-   `llmEscalated`, `realizedPnl: number | null`, `positionClosed: boolean`. Join read-only
-   (`decisions` ⨝ `shadow_verdicts` por `signal_id`, left join `positions` por `decision_id`).
+   `ABRow[]` con, por señal **con veredicto LLM** (ancla en `shadow_verdicts`): `signalId`,
+   `llmVerdict`, `llmEscalated`, `detVerdict: Verdict | null` (null = el determinista no entró),
+   `realizedPnl: number | null`, `positionClosed: boolean`. Join read-only **anclado en
+   `shadow_verdicts`** (`LEFT JOIN decisions ON signal_id`, `LEFT JOIN positions ON decision_id`).
 2. **`src/lib/reasoning/shadow-report.ts`** — `computeShadowReport(rows: ABRow[]): ShadowReport`
-   **puro**. Métricas:
-   - `total`, `bothPresent`.
-   - **Acuerdo de acción:** `agreeEnter`, `agreeSkip`, `llmSkipDetEnter`, `llmEnterDetSkip`,
-     `agreementRate`.
+   **puro**. `detAction = row.detVerdict ? 'enter' : 'skip'`; `llmAction = row.llmVerdict.action`.
+   Métricas:
+   - `total` (filas con veredicto LLM).
+   - **Acuerdo de acción (4 cuadrantes):** `agreeEnter`, `agreeSkip`, `llmSkipDetEnter`,
+     `llmEnterDetSkip`, `agreementRate = (agreeEnter+agreeSkip)/total`.
    - **Sizing/confianza** donde ambos `enter`: distribución de `confianza` LLM; `avgSizingLlm` vs
      `avgSizingDet`.
    - **Escalación:** `escalatedCount`, `escalationRate`.
-   - **Edge ponderado por resultado** (solo posiciones cerradas con `realized_pnl`):
-     `detPnl` = Σ realized_pnl; `llmPnl` = Σ (si LLM `enter`: `realized_pnl × (llmSizing/detSizing)`;
-     si LLM `skip`: 0); `edge = llmPnl − detPnl`. (En `sim` el LLM tomaría el mismo fill; difiere en
-     entrar/no y en el sizing.)
+   - **Edge de SIZING ponderado por resultado** (solo `agreeEnter` con posición cerrada y
+     `detSizing > 0`): `detPnl` = Σ realized_pnl; `llmPnl` = Σ `realized_pnl × (llmSizing/detSizing)`;
+     `sizingEdge = llmPnl − detPnl`. Filas con `detSizing === 0` se excluyen (guarda div/0).
 3. **`src/cli/shadow-report.ts`** — CLI `npm run shadow-report`: corre la query, computa el reporte,
    lo imprime legible (y opcionalmente JSON). Read-only; no muta nada.
 
-### Honestidad del edge (limitaciones documentadas)
+### Honestidad del edge (limitaciones documentadas, M1)
 
-El edge es una **aproximación**: atribuye a cada veredicto LLM el resultado del trade determinista
-que sí se ejecutó. No modela divergencias de entry/sl/tp del LLM (en `sim` el fill es el mismo; el LLM
-difiere en *entrar/no* y en *cuánto*). Los casos `llmEnterDetSkip` (LLM entra donde el determinista no)
-**no tienen P&L observado** (no se abrió posición) → se reportan como conteo, no como P&L. El reporte
-lo declara explícitamente para no sobre-vender el número.
+El `sizingEdge` mide **solo la dimensión de sizing condicionada al desenlace determinista**: cuánto
+habría cambiado el P&L si el trade (que sí se ejecutó) se hubiera dimensionado con el `sizingFactor`
+del LLM en vez del determinista. **NO** modela:
+- La **divergencia de gestión** del LLM: `LlmVerdict` trae su propio `entry`/`sl`/`tp`, distintos de
+  los del determinista. Un SL más ajustado del LLM podría stop-out antes y **cambiar el signo** del
+  resultado, no solo su magnitud. El `sizingEdge` ignora esto (asume el mismo desenlace).
+- Los `llmEnterDetSkip` (LLM entra donde el determinista no): **sin P&L observado** (no se abrió
+  posición) → conteo, no P&L.
+- Los `agreeEnter` cuyo trade aún no cerró → excluidos del P&L (solo conteo).
+
+El reporte declara estas tres limitaciones en su salida para no sobre-vender el número. El edge es
+una **señal direccional de sizing**, no un backtest del LLM (eso requeriría re-simular con sus niveles).
 
 ## Componentes (resumen)
 
@@ -165,7 +202,14 @@ lo declara explícitamente para no sobre-vender el número.
 | `src/lib/reasoning/shadow-report.ts` (+test) | `computeShadowReport` puro | Crear |
 | `src/cli/shadow-report.ts` | CLI `npm run shadow-report` | Crear |
 | `package.json` | script `shadow-report` | Modificar |
-| `.env.example` | `ESCALATION_MODEL` | Modificar |
+| `.env.example` | `ESCALATION_MODEL` (y retirar `DECISION_MODEL_ESCALATION`) | Modificar |
+| `ARCHITECTURE.md` §296/§300 | reflejar la separación resiliencia/escalación (M4) | Modificar |
+
+> **Decomposición del plan (L2):** dos grupos de tareas **independientes**. Grupo A
+> (escalación + risk-policy): toca `escalation.ts`, `run-decision-maker.ts`, `decision-maker.ts`,
+> skills, columna `escalated`. Grupo B (A/B): `shadow-report-query.ts`, `shadow-report.ts`, CLI —
+> subsistema read-only sin dependencia dura del Grupo A. El plan los ordena de forma que el fix de H1
+> (A/B) no bloquee escalación ni viceversa. Un solo spec/plan; tareas desacopladas.
 
 ## Resiliencia y líneas rojas
 
@@ -204,6 +248,28 @@ lo declara explícitamente para no sobre-vender el número.
 - `npm run shadow-report` produce métricas de acuerdo + edge sobre los datos existentes, read-only.
 - La escalación la decide el código (no el modelo); la pasada Opus no tiene tools de mutación.
 - `npm test` + `npm run typecheck` en verde; cobertura ≥ 80%.
+
+## Hallazgos de revisión de diseño (resueltos en este spec)
+
+Revisado por `kairos-design-reviewer` contra la doc real de Flue (skills.md, models.md),
+ARCHITECTURE.md y el código de SP5-9. Veredicto inicial: bloqueado por H1; resoluciones incorporadas:
+
+- **H1 (BLOQUEANTE, resuelto) — el A/B era ciego a los skip deterministas:** `decisions` solo se
+  puebla en `enter` (early-return en skip/dedup). El join se re-ancló en `shadow_verdicts LEFT JOIN
+  decisions LEFT JOIN positions`, derivando `detAction` por presencia/ausencia de fila → recupera los
+  4 cuadrantes. Invariante documentado.
+- **H2 — composición de skills es supuesto:** bajado de "verificado" a "supuesto validado por smoke",
+  con fallback (incrustar la doctrina en `decision-protocol`) explícito.
+- **M1 — edge:** la disclosure ahora aclara que `sizingEdge` mide SOLO la dimensión de sizing
+  condicionada al desenlace determinista; NO modela la divergencia SL/TP del LLM (puede cambiar el
+  signo). Guarda div/0 (`detSizing === 0` excluido).
+- **M2 — env:** el plan migra `DECISION_MODEL_ESCALATION`→`ESCALATION_MODEL`, desmonta el MODELS-array
+  de failover (resiliencia = mismo modelo) e introduce el dep `escalate` separado.
+- **M3 — default de Opus:** id concreto `'anthropic/claude-opus-4-6'` (no elipsis), confirmable en
+  `flue dev`; el smoke valida que resuelve.
+- **M4 — ARCHITECTURE:** el plan actualiza §296/§300 para reflejar la separación resiliencia/escalación.
+- **L1 — diferimiento:** motivo preciso = ShadowEvalArgs no cablea equity (no es incomputable en sim).
+- **L2 — plan:** grupos A (escalación+risk-policy) y B (A/B) desacoplados.
 
 ## Fuera de alcance de SP10
 
