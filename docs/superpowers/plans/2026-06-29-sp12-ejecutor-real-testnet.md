@@ -506,10 +506,10 @@ describe('precision', () => {
     expect(feeInBase(undefined, { cost: 0.3, currency: 'BNB' }, 'BTC')).toBe(0); // fee en BNB → 0 en base
   });
   test('meetsLegMin exige qty ≥ minAmount Y notional ≥ minCost', () => {
-    expect(meetsLegMin(0.001, 100, 0.0001, 10)).toBe(true);
+    expect(meetsLegMin(0.001, 100, 0.0001, 0.1)).toBe(true);   // notional 0.1 ≥ 0.1
     expect(meetsLegMin(0.00005, 100, 0.0001, 10)).toBe(false); // qty < minAmount
-    expect(meetsLegMin(0.05, 100, 0.0001, 10)).toBe(true);
-    expect(meetsLegMin(0.05, 1, 0.0001, 10)).toBe(false);      // notional < minCost
+    expect(meetsLegMin(0.05, 100, 0.0001, 0.1)).toBe(true);    // notional 5 ≥ 0.1
+    expect(meetsLegMin(0.05, 1, 0.0001, 10)).toBe(false);      // notional 0.05 < minCost
   });
 });
 ```
