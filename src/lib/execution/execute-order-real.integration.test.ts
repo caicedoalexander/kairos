@@ -84,7 +84,10 @@ describe('executeOrderReal', () => {
     expect(r.status).toBe('pending_execution');
     const pos = await query(`SELECT 1 FROM kairos.positions WHERE symbol=$1`, [SYMBOL]);
     expect(pos.length).toBe(0);
-    const ord = await query<{ status: string }>(`SELECT status FROM kairos.orders WHERE purpose='entry'`);
+    const ord = await query<{ status: string }>(
+      `SELECT o.status FROM kairos.orders o JOIN kairos.decisions d ON d.id=o.decision_id JOIN kairos.signals s ON s.id=d.signal_id WHERE o.purpose='entry' AND s.symbol=$1`,
+      [SYMBOL],
+    );
     expect(ord[0].status).toBe('pending_execution');
   });
 
@@ -142,6 +145,38 @@ describe('executeOrderReal', () => {
     const entry = await query<{ status: string }>(`SELECT status FROM kairos.orders WHERE idempotency_key=$1`, [signalId]);
     expect(entry[0].status).toBe('filled');
     await query(`DELETE FROM kairos.positions WHERE id='conflict01'`);
+  });
+
+  test('dust: qty insuficiente → emergency_closed, orden filled, 2 fills, sin posición', async () => {
+    const { signalId, decision } = await seed();
+    let emergencyCalled = 0;
+    // Market con mínimo de 0.01 BTC; sellableQty (0.01 − feeBase 0.00001 = 0.00999) < 0.01 → dispara dust.
+    const dustClient = {
+      market: () => ({ id: 'REALBTCUSDT', base: 'BTC', limits: { amount: { min: 0.01 }, cost: { min: 0.1 } } }),
+      amountToPrecision: (_s: string, a: number) => String(a),
+      priceToPrecision: (_s: string, p: number) => String(p),
+    } as never;
+    const r = await executeOrderReal(params(signalId, decision), baseDeps({
+      client: dustClient,
+      emergencyClose: async () => { emergencyCalled++; return { exitPrice: 94.9, exitFee: 0.4, exchangeOrderId: 'X2' }; },
+    }));
+    expect(r.status).toBe('emergency_closed');
+    expect(emergencyCalled).toBe(1);
+    // La orden queda 'filled', no 'pending_execution'.
+    const ord = await query<{ status: string }>(
+      `SELECT o.status FROM kairos.orders o JOIN kairos.decisions d ON d.id=o.decision_id JOIN kairos.signals s ON s.id=d.signal_id WHERE o.purpose='entry' AND s.symbol=$1`,
+      [SYMBOL],
+    );
+    expect(ord[0].status).toBe('filled');
+    // Hay exactamente 2 fills (entrada + salida de emergencia).
+    const fills = await query<{ id: string }>(
+      `SELECT f.id FROM kairos.fills f JOIN kairos.orders o ON o.id=f.order_id JOIN kairos.decisions d ON d.id=o.decision_id JOIN kairos.signals s ON s.id=d.signal_id WHERE s.symbol=$1`,
+      [SYMBOL],
+    );
+    expect(fills.length).toBe(2);
+    // No hay fila de posición abierta.
+    const pos = await query(`SELECT 1 FROM kairos.positions WHERE symbol=$1`, [SYMBOL]);
+    expect(pos.length).toBe(0);
   });
 
   test('carrera de setup con emergencyClose que TAMBIÉN falla → re-lanza; entry pending_execution', async () => {

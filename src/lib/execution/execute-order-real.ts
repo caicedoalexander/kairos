@@ -77,8 +77,13 @@ export async function executeOrderReal(p: ExecuteOrderRealParams, deps: RealOrde
     const sellableQty = Number(deps.client.amountToPrecision(p.symbol, entry.filledQty - entry.feeBase));
     const market = deps.client.market(p.symbol);
     if (!meetsLegMin(sellableQty, p.refPrice, market.limits.amount.min ?? 0, market.limits.cost.min ?? 0)) {
-      await deps.emergencyClose(deps.client, { symbol: p.symbol, qty: sellableQty });
-      await updateOrderStatus(claim.id, 'pending_execution');
+      // La compra real YA ocurrió: contabilizar fill de entrada, cerrar en emergencia y registrar fill de salida.
+      // La orden queda 'filled' (compró y cerró), no 'pending_execution' (que significaría fill incierto).
+      await setOrderExchangeId(claim.id, entry.exchangeOrderId);
+      await insertFill({ orderId: claim.id, price: entry.avgPrice, qty: entry.filledQty, fee: entry.fee });
+      const dustExit = await deps.emergencyClose(deps.client, { symbol: p.symbol, qty: sellableQty });
+      await insertFill({ orderId: claim.id, price: dustExit.exitPrice, qty: sellableQty, fee: dustExit.exitFee });
+      await updateOrderStatus(claim.id, 'filled');
       await appendAuditLog({ eventType: 'entry_dust_unprotectable', actor: 'execute-order-real', payload: { idem, sellableQty } });
       return result('emergency_closed', idem, { orderId: claim.id });
     }
@@ -118,7 +123,10 @@ export async function executeOrderReal(p: ExecuteOrderRealParams, deps: RealOrde
 // Compensación cuando openPosition choca con el índice per-setup (la compra ya pasó, sin fila de posición).
 async function compensateSetupRace(deps: RealOrderDeps, p: ExecuteOrderRealParams, orderId: string, qty: number, idem: string): Promise<ExecutionResult> {
   try {
-    await deps.emergencyClose(deps.client, { symbol: p.symbol, qty });
+    const exit = await deps.emergencyClose(deps.client, { symbol: p.symbol, qty });
+    // Sin fila de posición (23505 impidió abrirla) → solo fill de salida; no hay closeOpenPosition ni P&L.
+    // Simétrico con safeEmergency: el reconciler de SP13 espera 2 fills en la entry order para este camino.
+    await insertFill({ orderId, price: exit.exitPrice, qty, fee: exit.exitFee });
     await updateOrderStatus(orderId, 'filled');
     await appendAuditLog({ eventType: 'oco_failed_emergency_closed', actor: 'execute-order-real', payload: { idem, reason: 'setup-race' } });
     return result('emergency_closed', idem, { orderId });
