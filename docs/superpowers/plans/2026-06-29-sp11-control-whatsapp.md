@@ -261,7 +261,9 @@ export async function setPaused(paused: boolean, exec: Executor = query): Promis
 
 - [ ] **Step 5: Update `migrate.test.ts`**
 
-Añade `'bot_state'` a `EXPECTED_TABLES` en `src/db/migrate.test.ts`.
+Añade `'bot_state'` a `EXPECTED_TABLES` en `src/db/migrate.test.ts`. **(M-3)** Actualiza también la
+descripción del test que dice "crea las 16 tablas del esquema kairos" → "crea las **17** tablas del
+esquema kairos".
 
 - [ ] **Step 6: Run migrate + tests**
 
@@ -474,14 +476,21 @@ Añade `isPaused: getPaused` a `DEFAULT_DEPS`. Al inicio de `evaluateCandidate`,
 
 (Recuerda desestructurar `isPaused` del merge de deps: `const { notify, riskState, isPaused } = { ...DEFAULT_DEPS, ...deps };`.)
 
-- [ ] **Step 5: Run tests + typecheck**
+- [ ] **Step 5: Actualizar los tests UNITARIOS existentes de scan-tick (M-1)**
+
+`src/lib/scanner/scan-tick.test.ts` es **unit puro** (no tiene `beforeAll(migrate)`). Con el default
+`isPaused: getPaused` (que lee `bot_state` de la DB), los 4 tests existentes que NO inyectan `isPaused`
+intentarían leer la DB. Añade `isPaused: async () => false` al objeto de deps de **cada** uno de los 4
+tests existentes de scan-tick, para mantenerlos como unit sin DB. (Los tests de evaluate-candidate son
+de integración con `migrate()`, así que ahí el default `getPaused` lee el singleton=false sin problema
+— no requieren cambio salvo el test nuevo de H1.)
+
+- [ ] **Step 6: Run tests + typecheck**
 
 Run: `npx vitest run src/lib/scanner/scan-tick.test.ts src/orchestration/evaluate-candidate.test.ts && npm run typecheck`
-Expected: tests PASS (nuevos + existentes verdes — los existentes heredan `isPaused: getPaused`, que lee el singleton `bot_state` = false); typecheck verde.
+Expected: tests PASS (nuevos + existentes verdes); typecheck verde.
 
-> Nota: los tests existentes de evaluate-candidate/scan-tick que tocan DB ahora también leen `bot_state` (singleton=false por la migración de Task 3). Si algún test unitario puro no quiere DB, inyecta `isPaused: async () => false`.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/lib/scanner/scan-tick.ts src/orchestration/evaluate-candidate.ts src/lib/scanner/scan-tick.test.ts src/orchestration/evaluate-candidate.test.ts
@@ -542,6 +551,7 @@ import { ControlIntentSchema, type ControlIntent } from '../lib/control/control-
 import { dispatchControl } from '../lib/control/dispatch-control.ts';
 import { getOpenPositions } from '../db/repositories/positions.ts';
 import { setPaused } from '../db/repositories/bot-state.ts';
+import { getMode } from '../lib/mode.ts';
 import { sendWhatsApp } from '../notify/whatsapp.ts';
 import { appendAuditLog } from '../db/repositories/audit-log.ts';
 
@@ -563,7 +573,7 @@ interface SkillSession {
 export default defineWorkflow({
   agent: controlAgent,
   input: v.object({ text: v.string(), sender: v.string() }),
-  output: v.object({ command: v.string() }),
+  output: v.object({ command: v.picklist(['estado', 'pausa', 'reanuda', 'unknown']) }),
 
   async run({ harness, input }) {
     const session = (await harness.session()) as unknown as SkillSession;
@@ -578,7 +588,8 @@ export default defineWorkflow({
           payload: { sender: input.sender, error: err instanceof Error ? err.message : String(err) } });
       } catch { /* best-effort */ }
     }
-    const reply = await dispatchControl(intent, { getOpenPositions, setPaused });
+    // H-1: getOpenPositions exige `mode`; se envuelve con getMode() para satisfacer DispatchDeps.
+    const reply = await dispatchControl(intent, { getOpenPositions: () => getOpenPositions(getMode()), setPaused });
     try {
       await sendWhatsApp(reply, input.sender);
     } catch { /* best-effort: el control no tumba nada si Evolution falla */ }
@@ -665,6 +676,20 @@ describe('processControlMessage', () => {
 });
 ```
 
+**(M-2)** Además, añade un caso al `describe('handleEvolutionWebhook')` existente que verifique la
+guardia H2 cableada en el webhook (no solo el helper):
+
+```ts
+  test('fromMe true → 200 sin procesar (H2 cableado en el webhook)', async () => {
+    const body = { data: { key: { remoteJid: `${process.env.WHATSAPP_CONTROL_NUMBER ?? '111'}@s.whatsapp.net`, fromMe: true } } };
+    // headers(...) = el helper que el archivo ya usa para construir la firma válida.
+    const res = await handleEvolutionWebhook(headers(process.env.EVOLUTION_WEBHOOK_SECRET ?? 'test'), body);
+    expect(res.status).toBe(200);
+  });
+```
+(Ajusta `headers(...)` y el secreto al patrón que el archivo ya usa para los tests de
+`handleEvolutionWebhook`; el punto es: `fromMe:true` retorna 200 antes de procesar.)
+
 (Conserva los tests existentes del archivo — verifyEvolutionWebhook/extractSenderNumber/isAuthorizedSender/handleEvolutionWebhook.)
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -681,6 +706,7 @@ import { parseSlashCommand } from '../lib/control/parse-control.ts';
 import { dispatchControl, type DispatchDeps } from '../lib/control/dispatch-control.ts';
 import { getOpenPositions } from '../db/repositories/positions.ts';
 import { setPaused } from '../db/repositories/bot-state.ts';
+import { getMode } from '../lib/mode.ts';
 import { sendWhatsApp } from '../notify/whatsapp.ts';
 
 // H2: descarta la propia respuesta saliente del bot (evita el lazo de realimentación).
@@ -716,7 +742,8 @@ export async function processControlMessage(
 ): Promise<void> {
   const slash = parseSlashCommand(text);
   if (slash) {
-    const replyText = await route.dispatch(slash, { getOpenPositions, setPaused });
+    // H-1: getOpenPositions exige `mode`; se envuelve con getMode().
+    const replyText = await route.dispatch(slash, { getOpenPositions: () => getOpenPositions(getMode()), setPaused });
     await route.reply(replyText, sender);
   } else {
     await route.invoke(text, sender);   // texto libre → control-maker (Haiku)
