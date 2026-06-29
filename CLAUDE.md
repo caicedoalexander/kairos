@@ -49,6 +49,21 @@ Progreso por sprints (SP):
   (`harness.session('technical').task(...)` funciona en runtime — desconocido M1 resuelto), Sonnet
   integró el read (sizing 0.75 reflejó la cautela del analista), persistido en `shadow_verdicts` con
   `technical_model`/`technical_tokens`. Sin degradación.
+- **SP9 (hecho) — analista fundamental condicional:** segundo subagente (**fundamental**, Haiku, solo
+  lectura, `tools: []`) + primera fuente externa (**CryptoPanic**, noticias). El código dirige una
+  invocación **condicional**: `isMajorCap` (BTC/ETH) **antes** del fetch → `fetchCryptoPanicNews`
+  (best-effort, con caché, key en closure — nunca al prompt) → gate determinista
+  `shouldRunFundamental` (catalizador en ventana **O** derivados extremos) → analista solo si pasa.
+  Emite `fundamental_read` (bias/catalysts/positioning/decayNote?/confidence) guiado por
+  `fundamental-read`; modula el veredicto (veto/cautela/refuerzo, §17.4). Persistido en
+  `shadow_verdicts` (`fundamental_read/model/tokens/status/fetch_ok`); `fundamental_status` ∈ {ran,
+  skipped_not_major, skipped_quiet, skipped_fetch_failed, failed} + `fetch_ok` dan sustrato limpio al
+  A/B. **Degradación en dos capas** (fetch + analista). Validado con smoke vivo: el fundamental corrió
+  por la rama de derivados extremos (sin key de CryptoPanic), leyó `positioning='crowded_long'` y el
+  decision-maker **bajó sizing a 0.45** por el hacinamiento. Plan en
+  `docs/superpowers/plans/2026-06-28-sp9-analista-fundamental.md`.
+  *Pendiente operativo: poblar `CRYPTOPANIC_API_KEY` en `.env` para activar el camino de noticias
+  (hoy degrada a `[]` y el gate solo abre por derivados extremos).*
 
 > Pendientes antes de **testnet** (no de sim): OCO residente en el exchange (SL/TP inmediato real, no
 > polling por cierre de vela), lock Redis por candidato (§273), reconciler con `fetch` de ccxt, y
