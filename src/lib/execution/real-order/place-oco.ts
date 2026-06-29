@@ -29,6 +29,7 @@ export async function placeOco(client: OcoClient, a: PlaceOcoArgs): Promise<OcoR
     belowTimeInForce: 'GTC',
   };
   const raw = await retryOnNetwork(() => client.privatePostOrderListOco(params), MAX_OCO_RETRIES) as OcoRaw;
+  if (!Array.isArray(raw.orderReports)) throw new Error('OCO respuesta inesperada: orderReports no es un array');
   const sl = raw.orderReports.find((o) => o.type === 'STOP_LOSS_LIMIT');
   const tp = raw.orderReports.find((o) => o.type === 'LIMIT_MAKER');
   if (!sl || !tp) throw new Error('OCO sin legs SL/TP en orderReports');

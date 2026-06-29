@@ -36,4 +36,16 @@ describe('placeEntry', () => {
     const r = await placeEntry(c, { symbol: 'BTC/USDT', size: 0.01, refPrice: 100, slippageBps: 5 });
     expect(r).toEqual({ belowMin: false, filledQty: 0, avgPrice: 0, fee: 0, feeBase: 0, exchangeOrderId: '0' });
   });
+
+  test('fees[] (array) → suma todos los costs (rama reduce)', async () => {
+    const c = client({
+      id: '888',
+      filled: 0.01,
+      average: 100.04,
+      fees: [{ cost: 0.2, currency: 'USDT' }, { cost: 0.1, currency: 'USDT' }],
+    });
+    const r = await placeEntry(c, { symbol: 'BTC/USDT', size: 0.01, refPrice: 100, slippageBps: 5 });
+    if (r.belowMin) throw new Error('no debería ser belowMin');
+    expect(r.fee).toBeCloseTo(0.3);
+  });
 });

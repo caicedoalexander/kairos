@@ -3,7 +3,7 @@ import { ulid } from 'ulidx';
 import type { TradingMode } from '../mode.ts';
 import { SETUP_LOCK_TTL_MS } from './limits.ts';
 
-// Lock de mutua exclusión por SETUP (no por señal): el dedup de Kairos es per-setup. Fail-closed.
+// Lock de mutua exclusión por SETUP (no por señal): el dedup de Kairos es per-setup. Fail-closed pronto.
 export const NOT_ACQUIRED = { lock: 'not_acquired' } as const;
 export type NotAcquired = typeof NOT_ACQUIRED;
 
@@ -17,7 +17,14 @@ function defaultClient(): LockClient {
   if (shared) return shared as unknown as LockClient;
   const url = process.env.REDIS_URL;
   if (!url) throw new Error('REDIS_URL no configurada (lock de setup)');
-  shared = new IORedis(url);
+  // Fail-closed PRONTO: con enableOfflineQueue:false el cliente rechaza inmediatamente
+  // en lugar de encolar comandos cuando Redis está caído; maxRetriesPerRequest:1 evita
+  // reintentos de ioredis que demorarían el rechazo; commandTimeout:5000 es un techo duro.
+  // Resultado: un outage de Redis produce un reject rápido → el fail-closed documentado
+  // es real (el caller no ejecuta sin lock), no un cuelgue silencioso.
+  // (No se puede unit-testear el cuelgue sin un Redis real caído; el test de fail-closed
+  // existente cubre el comportamiento observable: set lanza → fn no se ejecuta.)
+  shared = new IORedis(url, { maxRetriesPerRequest: 1, enableOfflineQueue: false, commandTimeout: 5000 });
   return shared as unknown as LockClient;
 }
 

@@ -98,7 +98,7 @@ export async function executeOrderReal(p: ExecuteOrderRealParams, deps: RealOrde
     } catch (e) {
       if (!isOpenSetupViolation(e)) throw e;
       // Carrera de setup (edge: lock expirado). La compra real YA ocurrió → compensar.
-      return await compensateSetupRace(deps, p, claim.id, sellableQty, idem);
+      return await compensateSetupRace(deps, p, claim.id, entry.exchangeOrderId, sellableQty, idem);
     }
 
     // OCO residente. Fallo → cierre de emergencia (la posición ya existe).
@@ -110,7 +110,7 @@ export async function executeOrderReal(p: ExecuteOrderRealParams, deps: RealOrde
       await appendAuditLog({ eventType: 'order_filled_real', actor: 'execute-order-real', payload: { idem, positionId, orderListId: oco.orderListId } });
       return result('filled', idem, { orderId: claim.id, positionId, fillPrice: entry.avgPrice, qty: sellableQty, fee: entry.fee });
     } catch {
-      return await safeEmergency(deps, p, sellableQty, entry.avgPrice, positionId, claim.id, idem);
+      return await safeEmergency(deps, p, sellableQty, entry.avgPrice, entry.fee, positionId, claim.id, idem);
     }
   });
 
@@ -121,12 +121,13 @@ export async function executeOrderReal(p: ExecuteOrderRealParams, deps: RealOrde
 }
 
 // Compensación cuando openPosition choca con el índice per-setup (la compra ya pasó, sin fila de posición).
-async function compensateSetupRace(deps: RealOrderDeps, p: ExecuteOrderRealParams, orderId: string, qty: number, idem: string): Promise<ExecutionResult> {
+async function compensateSetupRace(deps: RealOrderDeps, p: ExecuteOrderRealParams, orderId: string, exchangeOrderId: string, qty: number, idem: string): Promise<ExecutionResult> {
   try {
     const exit = await deps.emergencyClose(deps.client, { symbol: p.symbol, qty });
     // Sin fila de posición (23505 impidió abrirla) → solo fill de salida; no hay closeOpenPosition ni P&L.
     // Simétrico con safeEmergency: el reconciler de SP13 espera 2 fills en la entry order para este camino.
     await insertFill({ orderId, price: exit.exitPrice, qty, fee: exit.exitFee });
+    await setOrderExchangeId(orderId, exchangeOrderId);
     await updateOrderStatus(orderId, 'filled');
     await appendAuditLog({ eventType: 'oco_failed_emergency_closed', actor: 'execute-order-real', payload: { idem, reason: 'setup-race' } });
     return result('emergency_closed', idem, { orderId });
@@ -139,10 +140,10 @@ async function compensateSetupRace(deps: RealOrderDeps, p: ExecuteOrderRealParam
 }
 
 // Cierre de emergencia tras fallo de OCO (la fila de posición SÍ existe → protected=false es el marcador).
-async function safeEmergency(deps: RealOrderDeps, p: ExecuteOrderRealParams, qty: number, avgFillPrice: number, positionId: string, orderId: string, idem: string): Promise<ExecutionResult> {
+async function safeEmergency(deps: RealOrderDeps, p: ExecuteOrderRealParams, qty: number, avgFillPrice: number, entryFee: number, positionId: string, orderId: string, idem: string): Promise<ExecutionResult> {
   try {
     const exit = await deps.emergencyClose(deps.client, { symbol: p.symbol, qty });
-    const realized = (exit.exitPrice - avgFillPrice) * qty - exit.exitFee;   // L1: P&L con el fill real, no el planificado
+    const realized = (exit.exitPrice - avgFillPrice) * qty - exit.exitFee - entryFee;   // L1: P&L con el fill real; incluye fee de entrada y de salida
     // M3: el fill de salida se registra contra la entry order (no hay leg en este camino). El reconciler
     //     de SP13 debe tratar 2 fills en una misma entry order como un cierre de emergencia al recalcular P&L.
     await insertFill({ orderId, price: exit.exitPrice, qty, fee: exit.exitFee });

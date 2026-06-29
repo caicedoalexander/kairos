@@ -2,6 +2,7 @@
 import { describe, test, expect, vi } from 'vitest';
 import ccxt from 'ccxt';
 import { placeOco } from './place-oco.ts';
+import { MAX_OCO_RETRIES } from '../limits.ts';
 
 const okRaw = {
   orderListId: 123,
@@ -49,5 +50,6 @@ describe('placeOco', () => {
   test('agotados los retries de NetworkError → lanza', async () => {
     const c = client(async () => { throw new ccxt.NetworkError('down'); });
     await expect(placeOco(c, { symbol: 'BTC/USDT', qty: 0.01, sl: 95, tp: 110 })).rejects.toThrow('down');
+    expect(c.privatePostOrderListOco).toHaveBeenCalledTimes(MAX_OCO_RETRIES);
   });
 });

@@ -1,5 +1,6 @@
 import { describe, test, expect, vi } from 'vitest';
 import { withSetupLock, NOT_ACQUIRED } from './setup-lock.ts';
+import { SETUP_LOCK_TTL_MS } from './limits.ts';
 
 function fakeClient(setReturns: (string | null)[]) {
   let i = 0;
@@ -15,6 +16,8 @@ describe('withSetupLock', () => {
     const ran = await withSetupLock('s1', 'BTC/USDT', 'testnet', async () => 'done', { client });
     expect(ran).toBe('done');
     expect(client.set).toHaveBeenCalledOnce();
+    // La key es load-bearing para la exclusión cross-proceso (formato exacto).
+    expect(client.set).toHaveBeenCalledWith('kairos:lock:setup:s1:BTC/USDT:testnet', expect.any(String), 'PX', SETUP_LOCK_TTL_MS, 'NX');
     expect(client.eval).toHaveBeenCalledOnce(); // release condicional por token
   });
 
