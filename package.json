@@ -14,6 +14,7 @@
     "seed": "node --experimental-strip-types src/db/seed-strategies.ts",
     "backfill": "node --experimental-strip-types src/lib/market-data/backfill.ts",
     "backtest": "node --experimental-strip-types src/cli/backtest.ts",
+    "shadow-report": "node --env-file=.env --experimental-strip-types src/cli/shadow-report.ts",
     "worker": "node --experimental-strip-types src/worker.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
