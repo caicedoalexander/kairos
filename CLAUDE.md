@@ -45,7 +45,10 @@ Progreso por sprints (SP):
   `technical_read/technical_model/technical_tokens`) para A/B. **Degradación best-effort:** si el
   analista falla → `technical_read=null` + audit `technical_read_failed`, el veredicto se emite igual.
   Sigue en **sombra** sobre `sim`. Plan en `docs/superpowers/plans/2026-06-28-sp8-analista-tecnico.md`.
-  *Pendiente: smoke vivo (valida que la delegación por sesión nombrada funciona en runtime — M1).*
+  Validado con smoke vivo real: Haiku emitió un `technical_read` válido vía la **sesión nombrada**
+  (`harness.session('technical').task(...)` funciona en runtime — desconocido M1 resuelto), Sonnet
+  integró el read (sizing 0.75 reflejó la cautela del analista), persistido en `shadow_verdicts` con
+  `technical_model`/`technical_tokens`. Sin degradación.
 
 > Pendientes antes de **testnet** (no de sim): OCO residente en el exchange (SL/TP inmediato real, no
 > polling por cierre de vela), lock Redis por candidato (§273), reconciler con `fetch` de ccxt, y
