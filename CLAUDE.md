@@ -28,16 +28,27 @@ Progreso por sprints (SP):
   + audit `entry_deduped`) — **ya NO es bloqueador de testnet**; **graceful shutdown** (SIGTERM/SIGINT,
   cierra workers/queues/conn/pool); **reconciler delgado** de arranque (audita entries colgadas y legs
   huérfanas; sin ccxt — el diff contra exchange es de testnet). Plan en
-  `docs/superpowers/plans/2026-06-28-sp6-cierre-fase1.md`. Después: capa de **razonamiento**
-  (decision-maker LLM + analistas).
+  `docs/superpowers/plans/2026-06-28-sp6-cierre-fase1.md`.
+- **SP7 (hecho) — arranca Fase 2 (Razonamiento):** primer LLM, en **sombra**. Workflow Flue
+  `decision-maker` (`session.skill('decision-protocol', { result })` → veredicto Valibot; agente
+  **sin tools de mutación**) corre vía cola `shadow-eval` (worker en `app.ts`, `invoke` fire-and-forget)
+  y persiste a `kairos.shadow_verdicts` **junto al determinista** para A/B. El dinero (sim) **sigue
+  ejecutando el determinista** — el LLM no toca el camino del dinero. Validado con smoke vivo real
+  (Sonnet emitió un veredicto válido). Plan en `docs/superpowers/plans/2026-06-28-sp7-cimiento-llm-shadow.md`.
+  Fase 2 se decompone en SP7→SP10 (núcleo) + SP11 (control, separable); ver el spec.
 
 > Pendientes antes de **testnet** (no de sim): OCO residente en el exchange (SL/TP inmediato real, no
 > polling por cierre de vela), lock Redis por candidato (§273), reconciler con `fetch` de ccxt, y
 > mantener `kairos.ohlcv_candles` al día (cadencia de backfill ≤ `MONITOR_INTERVAL_MS`).
 
-> Nota: `evaluate-candidate` se implementó como **función de orquestación** dirigida por código
-> (no `defineWorkflow` descubierto) porque en Fase 1 no hay `session` LLM; en Fase 2 los pasos
-> post-veredicto se reusan dentro de un handler de Flue. Es una desviación consciente de §12.
+> Nota: `evaluate-candidate` es una **función de orquestación** dirigida por código (no
+> `defineWorkflow` descubierto) — el camino del dinero es determinista, no un workflow LLM. Vive en
+> **`src/orchestration/evaluate-candidate.ts`** (NO en `src/workflows/`): Flue **descubre como
+> workflow/canal/agente TODO `.ts` plano** en `src/workflows|channels|agents/`, así que esos
+> directorios solo pueden contener módulos descubribles. **Regla:** ni archivos `.test.ts` ni
+> funciones que no sean `defineWorkflow`/`channel`/`defineAgent` van planos ahí (los tests de un
+> módulo descubierto van en un subdir anidado `__tests__/`, que Flue ignora). Lo destapó el primer
+> `flue run` en SP7. Desviación consciente de §12.
 
 `ARCHITECTURE.md` es la **fuente de verdad** del diseño (14 secciones: agentes, flujos,
 skills, tools, estado, modelos, ejecución, riesgos, fases). Léelo antes de implementar o
@@ -55,7 +66,7 @@ siempre código determinista, idempotente y auditable. Esto separa el sistema en
 3. **Notificación (sin LLM)** — WhatsApp se renderiza por template desde el registro de
    decisión (sin alucinación). Solo el *inbound* de control reabre una sesión LLM.
 
-Flujo central (`workflows/evaluate-candidate.ts`): scanner detecta setup → encola job →
+Flujo central (`orchestration/evaluate-candidate.ts`): scanner detecta setup → encola job →
 decision-maker delega a los analistas y emite veredicto (Valibot) → `check_risk`
 (determinista) → si `allow`, `execute_order` (idempotente, ccxt) → notify (template).
 
