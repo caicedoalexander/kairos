@@ -1,12 +1,12 @@
 import { describe, test, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
-import { migrate } from '../db/migrate.ts';
-import { pool, query } from '../db/pool.ts';
+import { migrate } from '../../db/migrate.ts';
+import { pool, query } from '../../db/pool.ts';
 import {
   verifyEvolutionWebhook,
   extractSenderNumber,
   isAuthorizedSender,
   handleEvolutionWebhook,
-} from './evolution.ts';
+} from '../evolution.ts';
 
 beforeAll(async () => {
   await migrate();

@@ -2,7 +2,7 @@ import { Worker } from 'bullmq';
 import type { ConnectionOptions } from 'bullmq';
 import { getBullConnection } from './connection.ts';
 import { EVALUATE_QUEUE, type EvaluateJobData } from './evaluate-queue.ts';
-import { evaluateCandidate } from '../../workflows/evaluate-candidate.ts';
+import { evaluateCandidate } from '../../orchestration/evaluate-candidate.ts';
 import { appendAuditLog } from '../../db/repositories/audit-log.ts';
 import { enqueueShadowEval } from './shadow-queue.ts';
 
