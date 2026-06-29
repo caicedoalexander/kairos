@@ -47,6 +47,9 @@ describe('getAuthenticatedClient (singleton)', () => {
 
   test('sandbox activo cuando KAIROS_MODE != live', () => {
     const c = getAuthenticatedClient();
-    expect(c.urls['api']).not.toBe(undefined); // sandbox cambió urls
+    // setSandboxMode reemplaza las URLs de producción (api.binance.com) por las de testnet
+    // (testnet.binance.vision / testnet.binancefuture.com). Si el sandbox no se activó,
+    // este JSON contendría "api.binance.com" y el test fallaría.
+    expect(JSON.stringify(c.urls['api'])).toContain('testnet');
   });
 });
