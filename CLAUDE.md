@@ -89,10 +89,28 @@ Progreso por sprints (SP):
   ("pausa el bot", "reanuda", "¿cómo va?") se clasificó a `pausa`/`reanuda`/`estado` y el kill-switch
   cambió `bot_state`. Plan en `docs/superpowers/plans/2026-06-29-sp11-control-whatsapp.md`.
   **🎉 FASE 2 COMPLETA en sombra.** Siguiente: **testnet** (ver pendientes abajo).
+- **SP12 (hecho) — arranca Fase 3 (Testnet):** **ejecutor real** del camino del dinero. Despacho por
+  modo en `evaluateCandidate` (`sim → executeOrderSim` intacto; `testnet|live → executeOrderReal`).
+  `executeOrderReal` (`src/lib/execution/execute-order-real.ts`) es una máquina de estados determinista
+  con compensación: **lock Redis por setup** (`withSetupLock`, fail-closed) → re-check dedup dentro del
+  lock → claim DB idempotente → **entrada limit marketable IOC capada** (ccxt `createOrder`) → fills
+  reales → posición `protected=false` → **OCO residente server-side** (SL stop-limit + TP limit-maker
+  vía `privatePostOrderListOco`, qty **neta de fee**) → `protected=true`. Fallo de OCO o carrera de
+  setup (23505) → **cierre de emergencia** (market IOC). Lo que crashee/quede incierto se marca durable
+  (`positions.protected=false`, `orders.status='pending_execution'`/`'pending'`) para el reconciler de
+  SP13. Columna nueva `positions.protected` (default `false`, crash-safe). El LLM **sigue en sombra**.
+  Validado con la **suite (347/347)**; el **smoke vigilado en testnet real** (valida la llamada OCO de
+  Binance) queda **owner-gated, pendiente**. Plan en
+  `docs/superpowers/plans/2026-06-29-sp12-ejecutor-real-testnet.md`. **Gate: sólo smoke vigilado; el
+  loop continuo desatendido se habilita en SP13** (ver precondición dura I1 en el spec §Seguridad:
+  doble-compra secuencial tras fill incierto — no habilitar el loop sin el reconciler ccxt).
 
-> Pendientes antes de **testnet** (no de sim): OCO residente en el exchange (SL/TP inmediato real, no
-> polling por cierre de vela), lock Redis por candidato (§273), reconciler con `fetch` de ccxt, y
-> mantener `kairos.ohlcv_candles` al día (cadencia de backfill ≤ `MONITOR_INTERVAL_MS`).
+> Pendientes antes del **loop testnet continuo** (lo que falta de Fase 3, → SP13): monitor que detecta
+> cierres reales vía ccxt + P&L desde fills reales + trailing; **reconciler de arranque con `fetch` de
+> ccxt** (reconcilia `pending`/`pending_execution`/`protected=false` contra el exchange **antes** de que
+> el scanner dispare — cierra el hueco de doble-compra I1); mantener `kairos.ohlcv_candles` al día
+> (cadencia ≤ `MONITOR_INTERVAL_MS`). Y luego SP14: `/cierra` y `/modo` (control que toca dinero).
+> Hecho en SP12: ejecutor real, OCO residente, lock Redis por setup.
 
 > Nota: `evaluate-candidate` es una **función de orquestación** dirigida por código (no
 > `defineWorkflow` descubierto) — el camino del dinero es determinista, no un workflow LLM. Vive en
@@ -231,8 +249,12 @@ razonamiento (sigue en `sim` para medir edge) → **testnet** (plumbing real de 
 sim; no toques dinero real antes de validar en sim y testnet. Dashboard, futures, shorts y
 multi-exchange están **fuera de alcance** por ahora (no los construyas — YAGNI).
 
-**Dónde estamos:** Fase 1 **completa** en `sim` — el loop determinista entrada→salida corre cerrado
-(SP5 entrada + SP6 salida/dedup/shutdown/reconciler). El dedup per-setup ya está (índice único
-parcial), así que el riesgo de apilar posiciones está domado. Siguiente: la capa de **razonamiento**
-(decision-maker LLM + analistas), todavía en `sim` para medir edge; luego **testnet** (ver pendientes
-de testnet en Estado del proyecto: OCO residente, lock Redis, reconciler ccxt, backfill al día).
+**Dónde estamos:** Fase 1 (loop determinista en `sim`) y Fase 2 (razonamiento LLM en sombra)
+**completas**. **Fase 3 (testnet) arrancó con SP12**: el **ejecutor real** está cableado — `testnet`
+coloca entrada real + OCO residente server-side con idempotencia (lock por setup + `UNIQUE`) y
+compensación (cierre de emergencia), todo determinista (el LLM sigue en sombra). Suite 347/347.
+**Pendiente inmediato:** el **smoke vigilado en testnet** (owner-gated) que valida la llamada OCO real
+de Binance — hasta correrlo, el plumbing real no está confirmado end-to-end. **Siguiente sub-proyecto
+(SP13):** reconciler/monitor con ccxt + ohlcv al día → recién ahí se habilita el **loop testnet
+continuo desatendido** (la precondición dura I1 lo bloquea hasta entonces). Luego SP14 (`/cierra`,
+`/modo`) y Fase 4 (**live**, poco capital).
