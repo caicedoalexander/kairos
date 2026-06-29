@@ -5,8 +5,8 @@ export interface EntryClient {
   market(symbol: string): { id: string; base: string; limits: { amount: { min?: number }; cost: { min?: number } } };
   amountToPrecision(symbol: string, amount: number): string;
   priceToPrecision(symbol: string, price: number): string;
-  // `price` es el string de `priceToPrecision` (preserva la precisión decimal); el adaptador ccxt real debe hacer `Number(price)` antes de pasarlo a `exchange.createOrder`.
-  createOrder(symbol: string, type: string, side: string, amount: number, price: string, params: Record<string, unknown>): Promise<RawOrder>;
+  // `price` es number, alineado con la firma real de ccxt (`createOrder(symbol, type, side, amount, price?: number, params?)`).
+  createOrder(symbol: string, type: string, side: string, amount: number, price: number, params: Record<string, unknown>): Promise<RawOrder>;
 }
 interface RawOrder { id: string; filled?: number; average?: number; fee?: CcxtFee; fees?: CcxtFee[] }
 
@@ -21,7 +21,7 @@ export type EntryResult =
 // Entrada limit marketable IOC capada al peor precio aceptable. Devuelve el fill normalizado.
 export async function placeEntry(client: EntryClient, a: PlaceEntryArgs): Promise<EntryResult> {
   const market = client.market(a.symbol);
-  const cap = client.priceToPrecision(a.symbol, capPrice(a.refPrice, a.slippageBps));
+  const cap = Number(client.priceToPrecision(a.symbol, capPrice(a.refPrice, a.slippageBps)));
   const amount = Number(client.amountToPrecision(a.symbol, a.size));
   // Mínimos del market sobre el refPrice (estimación pre-trade): no enviar polvo.
   if (!meetsLegMin(amount, a.refPrice, market.limits.amount.min ?? 0, market.limits.cost.min ?? 0)) {

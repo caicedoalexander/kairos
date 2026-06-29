@@ -19,9 +19,9 @@ describe('placeEntry', () => {
     const c = client({ id: '777', filled: 0.01, average: 100.04, fee: { cost: 0.00001, currency: 'BTC' } }, (a) => { captured = a; });
     const r = await placeEntry(c, { symbol: 'BTC/USDT', size: 0.01, refPrice: 100, slippageBps: 5 });
     expect(r).toEqual({ belowMin: false, filledQty: 0.01, avgPrice: 100.04, fee: 0.00001, feeBase: 0.00001, exchangeOrderId: '777' });
-    // cap = 100·1.0005 = 100.05 (priceToPrecision → "100.05"); IOC
+    // cap = 100·1.0005 = 100.05 (priceToPrecision → "100.05" → Number → 100.05); IOC
     expect(captured[0]).toBe('BTC/USDT'); expect(captured[1]).toBe('limit'); expect(captured[2]).toBe('buy');
-    expect(captured[4]).toBe('100.05'); expect((captured[5] as { timeInForce: string }).timeInForce).toBe('IOC');
+    expect(captured[3]).toBe(0.01); expect(captured[4]).toBe(100.05); expect((captured[5] as { timeInForce: string }).timeInForce).toBe('IOC');
   });
 
   test('size por debajo del mínimo de notional → { belowMin: true } sin tocar el exchange', async () => {
