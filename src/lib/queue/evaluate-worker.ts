@@ -4,6 +4,7 @@ import { getBullConnection } from './connection.ts';
 import { EVALUATE_QUEUE, type EvaluateJobData } from './evaluate-queue.ts';
 import { evaluateCandidate } from '../../workflows/evaluate-candidate.ts';
 import { appendAuditLog } from '../../db/repositories/audit-log.ts';
+import { enqueueShadowEval } from './shadow-queue.ts';
 
 // Worker BullMQ: procesa cada candidato encolado con el orquestador determinista.
 export function startEvaluateWorker(): Worker<EvaluateJobData> {
@@ -12,7 +13,20 @@ export function startEvaluateWorker(): Worker<EvaluateJobData> {
   const conn = getBullConnection() as unknown as ConnectionOptions;
   const w = new Worker<EvaluateJobData>(
     EVALUATE_QUEUE,
-    async (job) => evaluateCandidate(job.data.signalId),
+    async (job) => {
+      await evaluateCandidate(job.data.signalId);
+      // Shadow eval (Fase 2, SP7): best-effort, fuera del camino del dinero. Un fallo aquí se
+      // audita y se traga; el job del money path ya completó su trabajo determinista.
+      try {
+        await enqueueShadowEval(job.data.signalId);
+      } catch (err: unknown) {
+        void appendAuditLog({
+          eventType: 'shadow_enqueue_failed',
+          actor: 'evaluate-worker',
+          payload: { signalId: job.data.signalId, error: err instanceof Error ? err.message : String(err) },
+        }).catch(() => {});
+      }
+    },
     { connection: conn, concurrency: 1 },
   );
   // Previene "Unhandled error event" fatal en blips de conexión a Redis.
