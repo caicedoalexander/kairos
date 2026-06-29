@@ -36,6 +36,16 @@ Progreso por sprints (SP):
   ejecutando el determinista** — el LLM no toca el camino del dinero. Validado con smoke vivo real
   (Sonnet emitió un veredicto válido). Plan en `docs/superpowers/plans/2026-06-28-sp7-cimiento-llm-shadow.md`.
   Fase 2 se decompone en SP7→SP10 (núcleo) + SP11 (control, separable); ver el spec.
+- **SP8 (hecho) — primer subagente:** **analista técnico** (Haiku, solo lectura, `tools: []`) al que el
+  decision-maker delega vía `session.task({ agent: 'technical-analyst', result })` **antes** de
+  sintetizar el veredicto. El código dirige la delegación (paso `analyze` en `runDecisionMaker`, sobre
+  una **sesión dedicada** `harness.session('technical')`), no el modelo. El subagente emite un
+  `technical_read` Valibot (bias/confluence/regime/divergence/mtfNote/notes) guiado por el skill
+  `technical-read`; se persiste junto al veredicto en `kairos.shadow_verdicts` (columnas
+  `technical_read/technical_model/technical_tokens`) para A/B. **Degradación best-effort:** si el
+  analista falla → `technical_read=null` + audit `technical_read_failed`, el veredicto se emite igual.
+  Sigue en **sombra** sobre `sim`. Plan en `docs/superpowers/plans/2026-06-28-sp8-analista-tecnico.md`.
+  *Pendiente: smoke vivo (valida que la delegación por sesión nombrada funciona en runtime — M1).*
 
 > Pendientes antes de **testnet** (no de sim): OCO residente en el exchange (SL/TP inmediato real, no
 > polling por cierre de vela), lock Redis por candidato (§273), reconciler con `fetch` de ccxt, y
