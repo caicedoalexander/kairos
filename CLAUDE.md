@@ -78,6 +78,16 @@ Progreso por sprints (SP):
   (`escalated=true`, `model_used=opus`), risk-policy movió el sizing, y el reporte contó la escalación.
   Plan en `docs/superpowers/plans/2026-06-29-sp10-escalacion-riskpolicy-ab.md`. **Fase 2 núcleo
   (SP7→SP10) COMPLETA en sombra; queda SP11 (control WhatsApp, separable).**
+- **SP11 (hecho) — canal de control WhatsApp inbound (cierra Fase 2):** completa el webhook Evolution
+  (firma → **guardia `fromMe`** → autoriza → audita → **ack-then-process** desacoplado). El mensaje se
+  parsea (comandos slash deterministas; texto libre → workflow `control-maker` con Haiku `low`,
+  **`tools: []`** — solo clasifica a un picklist cerrado; el código ejecuta). Comandos seguros:
+  **`/estado`** (read-only) y **`/pausa`/`/reanuda`** (kill-switch `bot_state.paused`, aplicado en DOS
+  puntos: `scan-tick` evita encolar **y** `evaluateCandidate` hace hard stop de jobs en cola, §53).
+  `/cierra` y `/modo` (tocan dinero) **diferidos a testnet**. Validado con smoke vivo: texto libre
+  ("pausa el bot", "reanuda", "¿cómo va?") se clasificó a `pausa`/`reanuda`/`estado` y el kill-switch
+  cambió `bot_state`. Plan en `docs/superpowers/plans/2026-06-29-sp11-control-whatsapp.md`.
+  **🎉 FASE 2 COMPLETA en sombra.** Siguiente: **testnet** (ver pendientes abajo).
 
 > Pendientes antes de **testnet** (no de sim): OCO residente en el exchange (SL/TP inmediato real, no
 > polling por cierre de vela), lock Redis por candidato (§273), reconciler con `fetch` de ccxt, y
