@@ -4,7 +4,7 @@ import type { Signal, Strategy } from '../scanner/types.ts';
 import type { LlmVerdict } from './verdict-schema.ts';
 import type { TechnicalRead } from './technical-read-schema.ts';
 import type { FundamentalRead } from './fundamental-read-schema.ts';
-import type { NewsItem } from '../sources/cryptopanic.ts';
+import type { NewsItem } from '../sources/news.ts';
 const READ: TechnicalRead = { bias: 'bullish', confluence: 'strong', regime: 'trending', divergence: 'none', mtfNote: 'm', notes: 'n' };
 const FREAD: FundamentalRead = { bias: 'bearish', catalysts: [{ title: 'hack', sentiment: 'bearish', relevance: 'high' }], positioning: 'crowded_long', decayNote: 'reciente', confidence: 'alta' };
 const NEWS_ITEM: NewsItem = { title: 'hack', publishedAt: '2026-06-28T11:00:00Z', kind: 'news', url: 'u' };

@@ -2,7 +2,7 @@ import type { Signal, Strategy, IndicatorSnapshot } from '../scanner/types.ts';
 import type { LlmVerdict } from './verdict-schema.ts';
 import type { TechnicalRead } from './technical-read-schema.ts';
 import type { FundamentalRead } from './fundamental-read-schema.ts';
-import type { NewsItem } from '../sources/cryptopanic.ts';
+import type { NewsItem } from '../sources/news.ts';
 import type { ShadowVerdictRow } from '../../db/repositories/shadow-verdicts.ts';
 
 export interface ShadowEvalArgs {

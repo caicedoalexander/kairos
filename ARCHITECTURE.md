@@ -694,7 +694,7 @@ Fundamental (macro-sesgo / veto)    ← lento, días
 
 | Categoría | Señales | Fuente (tier) | Rol |
 |---|---|---|---|
-| Catalizador / noticias | Listings, hacks, regulatorio, macro | CryptoPanic (gratis) | Veto/alerta; decae con el tiempo |
+| Catalizador / noticias | Listings, hacks, regulatorio, macro | **RSS de medios cripto** (CoinTelegraph por default, sin API key; configurable por `NEWS_RSS_URL`) | Veto/alerta; decae con el tiempo. *(CryptoPanic free se discontinuó el 2026-04-01 → se migró a RSS, más robusto: sin key ni cuota.)* |
 | Sentimiento social | Volumen social, ratio bullish/bearish | LunarCrush (gratis) | Contexto de multitud; contrarian en extremos |
 | Posicionamiento (derivados) | `funding_z`, `oi_change_pct`, `liq_imbalance` | §15 (`get_derivatives_signals`) | Hacinamiento/convicción; riesgo de squeeze |
 | On-chain de régimen | Flujos de exchange (in/out), actividad de red (active addr, tx) | Tier gratis/barato; **Glassnode/Santiment de pago = upgrade diferible** | Acumulación vs distribución; salud de red |

@@ -50,9 +50,9 @@ Progreso por sprints (SP):
   integró el read (sizing 0.75 reflejó la cautela del analista), persistido en `shadow_verdicts` con
   `technical_model`/`technical_tokens`. Sin degradación.
 - **SP9 (hecho) — analista fundamental condicional:** segundo subagente (**fundamental**, Haiku, solo
-  lectura, `tools: []`) + primera fuente externa (**CryptoPanic**, noticias). El código dirige una
-  invocación **condicional**: `isMajorCap` (BTC/ETH) **antes** del fetch → `fetchCryptoPanicNews`
-  (best-effort, con caché, key en closure — nunca al prompt) → gate determinista
+  lectura, `tools: []`) + primera fuente externa (**noticias por RSS**). El código dirige una
+  invocación **condicional**: `isMajorCap` (BTC/ETH) **antes** del fetch → `fetchNews`
+  (best-effort, con caché, sin API key — nunca al prompt) → gate determinista
   `shouldRunFundamental` (catalizador en ventana **O** derivados extremos) → analista solo si pasa.
   Emite `fundamental_read` (bias/catalysts/positioning/decayNote?/confidence) guiado por
   `fundamental-read`; modula el veredicto (veto/cautela/refuerzo, §17.4). Persistido en
@@ -62,8 +62,9 @@ Progreso por sprints (SP):
   por la rama de derivados extremos (sin key de CryptoPanic), leyó `positioning='crowded_long'` y el
   decision-maker **bajó sizing a 0.45** por el hacinamiento. Plan en
   `docs/superpowers/plans/2026-06-28-sp9-analista-fundamental.md`.
-  *Pendiente operativo: poblar `CRYPTOPANIC_API_KEY` en `.env` para activar el camino de noticias
-  (hoy degrada a `[]` y el gate solo abre por derivados extremos).*
+  *Fuente de noticias: **RSS** (`src/lib/sources/news.ts`, CoinTelegraph por default, `NEWS_RSS_URL`
+  configurable, sin API key) — se migró desde CryptoPanic cuando su free tier se discontinuó
+  (2026-04-01). El camino de noticias funciona out-of-the-box; el gate también abre por derivados extremos.*
 - **SP10 (hecho) — cierre del núcleo de Fase 2:** (1) **escalación determinista Sonnet→Opus** —
   `shouldEscalate` (puro: confianza baja **O** analistas opuestos) dispara una **segunda pasada
   deliberada** con Opus sobre una sesión dedicada `harness.session('escalation')`; **el código decide,

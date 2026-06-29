@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import { isMajorCap, shouldRunFundamental } from './fundamental-gate.ts';
 import type { IndicatorSnapshot } from '../scanner/types.ts';
-import type { NewsItem } from '../sources/cryptopanic.ts';
+import type { NewsItem } from '../sources/news.ts';
 
 const NEWS: NewsItem[] = [{ title: 'x', publishedAt: '2026-06-28T11:00:00Z', kind: 'news', url: 'u' }];
 function snap(fundingZ: number | null, oiChangePct: number | null): IndicatorSnapshot {

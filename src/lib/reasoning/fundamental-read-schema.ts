@@ -1,6 +1,6 @@
 import * as v from 'valibot';
 
-// Lectura fundamental del subagente (§17.4/§17.5). Centrada en catalizadores (CryptoPanic) +
+// Lectura fundamental del subagente (§17.4/§17.5). Centrada en catalizadores (noticias RSS) +
 // posicionamiento (funding/OI ya en el snapshot). El analista JUZGA noticias y derivados, no calcula.
 export const FundamentalReadSchema = v.object({
   bias: v.picklist(['bullish', 'neutral', 'bearish']),           // sesgo macro del conjunto leído

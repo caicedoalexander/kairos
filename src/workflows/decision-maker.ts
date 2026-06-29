@@ -9,7 +9,7 @@ import { analyzeTechnical, type TaskSession } from '../lib/reasoning/analyze-tec
 import { analyzeFundamental, type FundamentalTaskSession } from '../lib/reasoning/analyze-fundamental.ts';
 import { isMajorCap, shouldRunFundamental } from '../lib/reasoning/fundamental-gate.ts';
 import { shouldEscalate } from '../lib/reasoning/escalation.ts';
-import { fetchCryptoPanicNews } from '../lib/sources/cryptopanic.ts';
+import { fetchNews } from '../lib/sources/news.ts';
 import { runDecisionMaker, type DecisionMakerDeps } from '../lib/reasoning/run-decision-maker.ts';
 import { getSignalById } from '../db/repositories/signals.ts';
 import { getStrategy } from '../db/repositories/strategies.ts';
@@ -67,7 +67,7 @@ export default defineWorkflow({
       isAlreadyEvaluated,
       analyze: (args) => analyzeTechnical(techSession, args as unknown as Record<string, unknown>, TECHNICAL_MODEL),
       isMajorCap,
-      fetchNews: (symbol) => fetchCryptoPanicNews(symbol),
+      fetchNews: (symbol) => fetchNews(symbol),
       shouldRunFundamental,
       analyzeFundamental: (fargs) => analyzeFundamental(fundSession, fargs as unknown as Record<string, unknown>, FUNDAMENTAL_MODEL),
       evaluate: (args) => evaluateWithFailover(session, args as unknown as Record<string, unknown>, MODELS),

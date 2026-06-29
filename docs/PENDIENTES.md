@@ -17,7 +17,7 @@
 |---|---|---|
 | `ANTHROPIC_API_KEY` | ✅ poblada (smokes funcionaron) | — |
 | `DATABASE_URL`, `REDIS_URL` | ✅ pobladas | — |
-| **`CRYPTOPANIC_API_KEY`** | ⚠️ **vacía** | **Poblar** para activar el camino de noticias del analista fundamental. Hoy el fetch degrada a `[]` y el gate solo abre por **derivados extremos**; con la key, también por catalizadores. Free tier basta. |
+| `NEWS_RSS_URL` | ✅ default funciona (CoinTelegraph RSS, sin key) | Opcional. El analista fundamental ya recibe noticias **out-of-the-box** vía RSS (`src/lib/sources/news.ts`). Override solo si quieres otro feed. *(Se migró desde CryptoPanic: su free tier se discontinuó el 2026-04-01.)* |
 | `ESCALATION_MODEL` | no seteada → default `anthropic/claude-opus-4-6` | El default **resolvió** en el smoke (Opus corrió). Si el catálogo de Pi cambia el id de Opus, override aquí (confirmar con `flue dev`). |
 | `CONTROL_MODEL` | no seteada → default `anthropic/claude-haiku-4-5` | Opcional. |
 | `DECISION_MODEL` / `TECHNICAL_MODEL` / `FUNDAMENTAL_MODEL` | defaults razonables (Sonnet/Haiku) | Opcional. |
@@ -63,7 +63,7 @@ testnet, no antes:
 ## 3. Fuera de alcance de Fase 2 (futuro, YAGNI)
 
 - **Analista fundamental — fuentes adicionales:** LunarCrush (sentimiento social) y on-chain
-  (Glassnode/Santiment, de pago). SP9 entregó CryptoPanic (noticias) + posicionamiento (funding/OI).
+  (Glassnode/Santiment, de pago). SP9 entregó **noticias por RSS** + posicionamiento (funding/OI).
 - **Circuit-breaker / `pending_approvals`** (aprobación humana por trade vía WhatsApp): opcional, default
   OFF (el owner eligió autonomía total). No implementado.
 - **Dashboard del A/B:** SP10 entregó el reporte como CLI (`npm run shadow-report`); un dashboard es
