@@ -14,3 +14,8 @@ export const DEFAULT_SIM_STARTING_EQUITY = 10000;
 
 // Lock por setup (SP12): TTL que acota el peor caso entrada + OCO(retries) + cierre de emergencia.
 export const SETUP_LOCK_TTL_MS = 45_000;
+
+// OCO residente (SP12): offset del límite del stop bajo el trigger; reintentos + backoff del OCO ante blip de red.
+export const STOP_LIMIT_OFFSET_BPS = 20;
+export const MAX_OCO_RETRIES = 3;
+export const OCO_RETRY_BACKOFF_MS = 300;   // base del backoff exponencial (300, 600, …)
