@@ -26,7 +26,7 @@
 ### Task 1: Columna `positions.protected` + repo + callers
 
 **Files:**
-- Modify: `src/db/migrate.ts` (añadir `ALTER TABLE` idempotente)
+- Modify: `src/db/schema.sql` (añadir `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, patrón de SP6)
 - Modify: `src/db/repositories/positions.ts` (`openPosition` con `protected` requerido; nuevo `setPositionProtected`)
 - Modify: `src/lib/execution/execute-order.ts:51-55` (el `openPosition` de sim pasa `protected: true`)
 - Modify: `src/lib/monitor/close-position.test.ts:25` y cualquier otro helper de test que llame `openPosition` (pasar `protected: true`)
@@ -80,11 +80,13 @@ Expected: FAIL (columna `protected` no existe / `setPositionProtected` no defini
 
 - [ ] **Step 3: Añade la migración idempotente**
 
-En `src/db/migrate.ts`, junto al resto de DDL del esquema `kairos`, añade (ubícala tras la creación de `kairos.positions`):
+`src/db/migrate.ts` **no** ejecuta SQL inline — lee `src/db/schema.sql` y lo aplica. El patrón del proyecto (ver SP6: `entry_fee`, `decision_id`) es añadir el `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` al final de la sección de posiciones en `schema.sql`. Añade ahí:
 
-```ts
-await query(`ALTER TABLE kairos.positions ADD COLUMN IF NOT EXISTS protected boolean NOT NULL DEFAULT false`);
+```sql
+ALTER TABLE kairos.positions ADD COLUMN IF NOT EXISTS protected boolean NOT NULL DEFAULT false;
 ```
+
+Localiza el bloque de `ALTER TABLE kairos.positions ADD COLUMN IF NOT EXISTS` existente y pon la nueva línea junto a ellos. `migrate.ts` no se toca.
 
 - [ ] **Step 4: Modifica `openPosition` y añade `setPositionProtected`**
 
@@ -146,7 +148,7 @@ Expected: PASS; typecheck sin errores (todos los callers pasan `protected`).
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/db/migrate.ts src/db/repositories/positions.ts src/db/repositories/positions.protected.test.ts src/lib/execution/execute-order.ts src/lib/monitor/close-position.test.ts
+git add src/db/schema.sql src/db/repositories/positions.ts src/db/repositories/positions.protected.test.ts src/lib/execution/execute-order.ts src/lib/monitor/close-position.test.ts
 git commit -m "feat(sp12): columna positions.protected (marcador durable) + setPositionProtected"
 ```
 
@@ -767,9 +769,10 @@ Expected: FAIL.
 - [ ] **Step 3: Añade constantes en `limits.ts`**
 
 ```ts
-// OCO residente (SP12): offset del límite del stop bajo el trigger; reintentos del OCO ante blip de red.
+// OCO residente (SP12): offset del límite del stop bajo el trigger; reintentos + backoff del OCO ante blip de red.
 export const STOP_LIMIT_OFFSET_BPS = 20;
 export const MAX_OCO_RETRIES = 3;
+export const OCO_RETRY_BACKOFF_MS = 300;   // base del backoff exponencial (300, 600, …)
 ```
 
 - [ ] **Step 4: Implementa `place-oco.ts`**
@@ -778,7 +781,7 @@ export const MAX_OCO_RETRIES = 3;
 // src/lib/execution/real-order/place-oco.ts
 import ccxt from 'ccxt';
 import { stopLimitPrice } from './precision.ts';
-import { STOP_LIMIT_OFFSET_BPS, MAX_OCO_RETRIES } from '../limits.ts';
+import { STOP_LIMIT_OFFSET_BPS, MAX_OCO_RETRIES, OCO_RETRY_BACKOFF_MS } from '../limits.ts';
 
 export interface OcoClient {
   market(symbol: string): { id: string };
@@ -811,7 +814,8 @@ export async function placeOco(client: OcoClient, a: PlaceOcoArgs): Promise<OcoR
   return { orderListId: String(raw.orderListId), slOrderId: String(sl.orderId), tpOrderId: String(tp.orderId) };
 }
 
-// Reintenta sólo errores de red (NetworkError ⊃ RequestTimeout/RateLimit/ExchangeNotAvailable).
+// Reintenta sólo errores de red (NetworkError ⊃ RequestTimeout/RateLimit/ExchangeNotAvailable),
+// con backoff exponencial (M2: RateLimitExceeded sin espera empeora; el backoff lo alivia).
 async function retryOnNetwork<T>(fn: () => Promise<T>, attempts: number): Promise<T> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
@@ -819,10 +823,13 @@ async function retryOnNetwork<T>(fn: () => Promise<T>, attempts: number): Promis
     catch (err) {
       if (!(err instanceof ccxt.NetworkError)) throw err;  // ExchangeError → no reintenta
       lastErr = err;
+      if (i < attempts - 1) await sleep(OCO_RETRY_BACKOFF_MS * 2 ** i);
     }
   }
   throw lastErr;
 }
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 ```
 
 - [ ] **Step 5: Corre — debe pasar**
@@ -971,7 +978,11 @@ const passLock: NonNullable<RealOrderDeps['withLock']> = async (_s, _sym, _m, fn
 
 function baseDeps(over: Partial<RealOrderDeps>): RealOrderDeps {
   return {
-    client: { market: () => ({ id: 'REALBTCUSDT', base: 'BTC', limits: { amount: { min: 0.0001 }, cost: { min: 0.1 } } }) } as never,
+    client: {
+      market: () => ({ id: 'REALBTCUSDT', base: 'BTC', limits: { amount: { min: 0.0001 }, cost: { min: 0.1 } } }),
+      amountToPrecision: (_s: string, a: number) => String(a),   // H2: el ejecutor llama amountToPrecision
+      priceToPrecision: (_s: string, p: number) => String(p),
+    } as never,
     placeEntry: async () => ({ belowMin: false, filledQty: 0.01, avgPrice: 100.04, fee: 0.00001, feeBase: 0.00001, exchangeOrderId: 'E1' }),
     placeOco: async () => ({ orderListId: 'L1', slOrderId: 'S1', tpOrderId: 'T1' }),
     emergencyClose: async () => ({ exitPrice: 94.9, exitFee: 0.4, exchangeOrderId: 'X1' }),
@@ -1069,6 +1080,39 @@ describe('executeOrderReal', () => {
     const r2 = await executeOrderReal(params(signalId, decision), baseDeps({ hasOpenForSetup: async () => false }));
     expect(r2.status).toBe('duplicate');
   });
+
+  // H4: carrera de setup (lock expirado). Hay una posición abierta del MISMO setup, pero el re-check
+  // se saltea (hasOpenForSetup=false simula lock expirado/stale) → openPosition choca con el índice
+  // único parcial idx_positions_open_setup (23505) → compensateSetupRace.
+  test('carrera de setup (23505 en openPosition) → emergency_closed; entry queda filled', async () => {
+    const { signalId, decision } = await seed();
+    // Posición conflictiva preexistente del mismo (strategy, symbol, mode):
+    await query(`INSERT INTO kairos.positions (id, symbol, side, entry, size, sl, tp, status, strategy_id, mode, entry_fee, protected)
+                 VALUES ('conflict01', $1, 'long', 100, 0.01, 95, 110, 'open', $2, 'testnet', 0, true)`, [SYMBOL, STRATEGY_ID]);
+    let emergencyCalled = 0;
+    const r = await executeOrderReal(params(signalId, decision), baseDeps({
+      hasOpenForSetup: async () => false,   // simula lock expirado: el re-check no ve la posición
+      emergencyClose: async () => { emergencyCalled++; return { exitPrice: 94.9, exitFee: 0.4, exchangeOrderId: 'X1' }; },
+    }));
+    expect(r.status).toBe('emergency_closed');
+    expect(emergencyCalled).toBe(1);   // la compra real se aplanó
+    const entry = await query<{ status: string }>(`SELECT status FROM kairos.orders WHERE idempotency_key=$1`, [signalId]);
+    expect(entry[0].status).toBe('filled');
+    await query(`DELETE FROM kairos.positions WHERE id='conflict01'`);
+  });
+
+  test('carrera de setup con emergencyClose que TAMBIÉN falla → re-lanza; entry pending_execution', async () => {
+    const { signalId, decision } = await seed();
+    await query(`INSERT INTO kairos.positions (id, symbol, side, entry, size, sl, tp, status, strategy_id, mode, entry_fee, protected)
+                 VALUES ('conflict02', $1, 'long', 100, 0.01, 95, 110, 'open', $2, 'testnet', 0, true)`, [SYMBOL, STRATEGY_ID]);
+    await expect(executeOrderReal(params(signalId, decision), baseDeps({
+      hasOpenForSetup: async () => false,
+      emergencyClose: async () => { throw new Error('emergency down'); },
+    }))).rejects.toThrow('emergency_close_failed');
+    const entry = await query<{ status: string }>(`SELECT status FROM kairos.orders WHERE idempotency_key=$1`, [signalId]);
+    expect(entry[0].status).toBe('pending_execution');   // marcador durable queryable (sin fila de posición)
+    await query(`DELETE FROM kairos.positions WHERE id='conflict02'`);
+  });
 });
 ```
 
@@ -1095,7 +1139,7 @@ import type { EmergencyClient, EmergencyArgs, ExitResult } from './real-order/em
 import type { Verdict, RiskResult, ExecutionResult } from './types.ts';
 import type { TradingMode } from '../mode.ts';
 
-type RealClient = EntryClient & OcoClient & EmergencyClient;
+export type RealClient = EntryClient & OcoClient & EmergencyClient;
 
 export interface ExecuteOrderRealParams {
   signalId: string; symbol: string; strategyId: string;
@@ -1187,8 +1231,7 @@ export async function executeOrderReal(p: ExecuteOrderRealParams, deps: RealOrde
       await appendAuditLog({ eventType: 'order_filled_real', actor: 'execute-order-real', payload: { idem, positionId, orderListId: oco.orderListId } });
       return result('filled', idem, { orderId: claim.id, positionId, fillPrice: entry.avgPrice, qty: sellableQty, fee: entry.fee });
     } catch {
-      const exit = await safeEmergency(deps, p, sellableQty, positionId, claim.id, idem);
-      return exit;
+      return await safeEmergency(deps, p, sellableQty, entry.avgPrice, positionId, claim.id, idem);
     }
   });
 
@@ -1211,10 +1254,12 @@ async function compensateSetupRace(deps: RealOrderDeps, p: ExecuteOrderRealParam
 }
 
 // Cierre de emergencia tras fallo de OCO (la fila de posición SÍ existe → protected=false es el marcador).
-async function safeEmergency(deps: RealOrderDeps, p: ExecuteOrderRealParams, qty: number, positionId: string, orderId: string, idem: string): Promise<ExecutionResult> {
+async function safeEmergency(deps: RealOrderDeps, p: ExecuteOrderRealParams, qty: number, avgFillPrice: number, positionId: string, orderId: string, idem: string): Promise<ExecutionResult> {
   try {
     const exit = await deps.emergencyClose(deps.client, { symbol: p.symbol, qty });
-    const realized = (exit.exitPrice - p.decision.verdict.entry) * qty - exit.exitFee;
+    const realized = (exit.exitPrice - avgFillPrice) * qty - exit.exitFee;   // L1: P&L con el fill real, no el planificado
+    // M3: el fill de salida se registra contra la entry order (no hay leg en este camino). El reconciler
+    //     de SP13 debe tratar 2 fills en una misma entry order como un cierre de emergencia al recalcular P&L.
     await insertFill({ orderId, price: exit.exitPrice, qty, fee: exit.exitFee });
     await closeOpenPosition(positionId, realized, new Date());
     await appendAuditLog({ eventType: 'oco_failed_emergency_closed', actor: 'execute-order-real', payload: { idem, positionId } });
@@ -1231,7 +1276,7 @@ async function safeEmergency(deps: RealOrderDeps, p: ExecuteOrderRealParams, qty
 - [ ] **Step 5: Corre el test — debe pasar**
 
 Run: `npm test -- execute-order-real && npm run typecheck`
-Expected: PASS (7 casos).
+Expected: PASS (9 casos, incluidos los dos de carrera de setup / 23505).
 
 - [ ] **Step 6: Commit**
 
@@ -1252,31 +1297,59 @@ git commit -m "feat(sp12): execute-order-real (máquina de estados con compensac
 - Consumes: `executeOrderReal` (T9), `getMode`.
 - Produces: `EvaluateDeps` gana `executeReal?: (signalId, args) => Promise<ExecutionResult>` (inyectable para test); en `testnet|live` se llama el ejecutor real con el singleton ccxt y los módulos reales.
 
-- [ ] **Step 1: Lee el test actual y añade los casos de despacho (fallan)**
+- [ ] **Step 1: Añade el bloque de despacho por modo (falla)**
 
-Añade a `src/orchestration/evaluate-candidate.test.ts` un bloque que inyecte un `executeReal` fake y verifique el ruteo:
+Añade al final de `src/orchestration/evaluate-candidate.test.ts` (reusa los helpers ya presentes en el archivo: `enterSignal`, `insertSignal`, `ALLOW_STATE`, `query`, `SYMBOL`). El `afterEach` existente ya limpia por `SYMBOL`. Restaura `KAIROS_MODE` para no contaminar otros tests:
 
 ```ts
-import { executeCandidateForTest } from './evaluate-candidate.ts'; // si el test usa evaluateCandidate directo, ver Step 3
+describe('evaluateCandidate — despacho por modo (SP12)', () => {
+  const OLD_MODE = process.env.KAIROS_MODE;
+  afterEach(() => { process.env.KAIROS_MODE = OLD_MODE; });
 
-describe('evaluateCandidate — despacho por modo', () => {
-  test('en testnet llama executeReal (no el sim) y notifica zero_fill', async () => {
+  test('en testnet rutea a executeReal (NO al sim) y mapea el outcome', async () => {
     process.env.KAIROS_MODE = 'testnet';
-    const calls: string[] = [];
+    const signalId = await insertSignal(enterSignal());
+    let realCalls = 0;
     const notify = vi.fn(async () => ({ messageId: 'm' }));
-    // ...arrange: señal + estrategia + riesgo allow (igual que los tests existentes de evaluate-candidate)...
-    const out = await evaluateCandidate(signalId, {
-      isPaused: async () => false,
-      notify,
-      executeReal: async () => { calls.push('real'); return { status: 'zero_fill', idempotencyKey: signalId, orderId: '', positionId: null, fillPrice: null, qty: null, fee: null }; },
+    const outcome = await evaluateCandidate(signalId, {
+      notify, riskState: ALLOW_STATE,
+      executeReal: async () => { realCalls++; return { status: 'filled', idempotencyKey: signalId, orderId: 'o', positionId: 'p', fillPrice: 100, qty: 0.01, fee: 0 }; },
     });
-    expect(calls).toEqual(['real']);
-    expect(out).toEqual({ kind: 'executed', positionId: null, status: 'zero_fill' });
+    expect(realCalls).toBe(1);
+    expect(outcome.kind).toBe('executed');
+    if (outcome.kind === 'executed') expect(outcome.status).toBe('filled');
+    // NO se creó posición vía sim (el executeReal fake no escribe DB)
+    const pos = await query(`SELECT 1 FROM kairos.positions WHERE symbol=$1`, [SYMBOL]);
+    expect(pos.length).toBe(0);
+  });
+
+  test('en testnet con zero_fill → executed/zero_fill y notifica', async () => {
+    process.env.KAIROS_MODE = 'testnet';
+    const signalId = await insertSignal(enterSignal());
+    const notify = vi.fn(async () => ({ messageId: 'm' }));
+    const outcome = await evaluateCandidate(signalId, {
+      notify, riskState: ALLOW_STATE,
+      executeReal: async () => ({ status: 'zero_fill', idempotencyKey: signalId, orderId: '', positionId: null, fillPrice: null, qty: null, fee: null }),
+    });
+    expect(outcome).toEqual({ kind: 'executed', positionId: null, status: 'zero_fill' });
+    expect(notify).toHaveBeenCalledOnce();
+  });
+
+  test('en sim NO se llama executeReal (rama intacta)', async () => {
+    process.env.KAIROS_MODE = 'sim';
+    const signalId = await insertSignal(enterSignal());
+    let realCalls = 0;
+    const outcome = await evaluateCandidate(signalId, {
+      notify: vi.fn(async () => ({ messageId: 'm' })), riskState: ALLOW_STATE,
+      executeReal: async () => { realCalls++; return { status: 'filled', idempotencyKey: signalId, orderId: '', positionId: null, fillPrice: null, qty: null, fee: null }; },
+    });
+    expect(realCalls).toBe(0);                  // sim usa executeOrderSim, no executeReal
+    expect(outcome.kind).toBe('executed');
+    const pos = await query(`SELECT 1 FROM kairos.positions WHERE symbol=$1`, [SYMBOL]);
+    expect(pos.length).toBe(1);                 // sim sí escribió la posición
   });
 });
 ```
-
-> El implementer debe reutilizar el arrange existente del archivo (seed de señal/estrategia/riesgo). Si `evaluateCandidate` no acepta hoy `executeReal`, lo añade en Step 3.
 
 - [ ] **Step 2: Corre — debe fallar**
 
@@ -1290,7 +1363,7 @@ En `src/orchestration/evaluate-candidate.ts`:
 1. Importa el ejecutor real y sus piezas:
 
 ```ts
-import { executeOrderReal } from '../lib/execution/execute-order-real.ts';
+import { executeOrderReal, type RealClient } from '../lib/execution/execute-order-real.ts';
 import { getAuthenticatedClient } from '../lib/ccxt-client.ts';
 import { placeEntry } from '../lib/execution/real-order/place-entry.ts';
 import { placeOco } from '../lib/execution/real-order/place-oco.ts';
@@ -1307,12 +1380,17 @@ export interface EvaluateDeps {
   executeReal?: (signalId: string, args: { symbol: string; strategyId: string; decision: { id: string; verdict: Verdict }; riskResult: RiskResult; refPrice: number; mode: TradingMode }) => Promise<ExecutionResult>;
 }
 
-const defaultExecuteReal: NonNullable<EvaluateDeps['executeReal']> = (signalId, args) =>
-  executeOrderReal({ signalId, ...args }, {
-    client: getAuthenticatedClient() as never,
+const defaultExecuteReal: NonNullable<EvaluateDeps['executeReal']> = async (signalId, args) => {
+  const client = getAuthenticatedClient();
+  await client.loadMarkets();   // H3: idempotente en ccxt; necesario para client.market()/amountToPrecision
+  return executeOrderReal({ signalId, ...args }, {
+    client: client as unknown as RealClient,   // L2: cast explícito, no `as never`
     placeEntry, placeOco, emergencyClose,
   });
+};
 ```
+
+> **H3 (loadMarkets):** `getAuthenticatedClient()` se mantiene **sync** y sin red (así el test de Task 4 no toca el exchange). El `await client.loadMarkets()` se hace aquí, en `defaultExecuteReal` (sólo se ejecuta en el smoke vivo, nunca en CI porque los tests inyectan `executeReal`). `loadMarkets` cachea en ccxt, así que llamarlo por job es barato.
 
 3. Sustituye la llamada única a `executeOrderSim` por el despacho. Reemplaza el bloque actual (líneas 69-72) por:
 
