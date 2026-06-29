@@ -535,7 +535,12 @@ En `src/db/repositories/shadow-verdicts.test.ts`, reemplaza el test `'insert + g
   });
 ```
 
-Y en el test `'ON CONFLICT DO NOTHING...'`, añade los 5 campos nuevos a ambas llamadas `insertShadowVerdict` (`fundamentalRead: null, fundamentalModel: null, fundamentalTokens: null, fundamentalStatus: null, fundamentalFetchOk: null`) para que compile.
+Y en **dos** tests existentes que también llaman `insertShadowVerdict`, añade los 5 campos nuevos
+(`fundamentalRead: null, fundamentalModel: null, fundamentalTokens: null, fundamentalStatus: null,
+fundamentalFetchOk: null`) a cada llamada para que compilen tras extender `ShadowVerdictRow`:
+- el test `'analista degradado: technical_* null se persiste y se lee como null'` (HIGH-2 — si no, el
+  `npm run typecheck` final de Task 7 falla sobre este archivo);
+- ambas llamadas del test `'ON CONFLICT DO NOTHING: reinsertar la misma señal no duplica ni lanza'`.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -753,6 +758,17 @@ Tests nuevos:
     expect(d.audit).toHaveBeenCalledWith(expect.objectContaining({ eventType: 'fundamental_read_failed' }));
     expect(d.persist).toHaveBeenCalledWith(expect.objectContaining({ fundamentalStatus: 'failed', fundamentalRead: null }));
   });
+
+  test('ran degradado: fetch falló pero derivados extremos → ran + fetch_ok=false (HIGH-1)', async () => {
+    // El gate pasa por derivados extremos aunque el fetch de noticias falle: el analista corre con
+    // news=[], status='ran' pero fetchOk=false → el A/B (SP10) distingue un 'ran' degradado.
+    const d = deps({ fetchNews: async () => ({ items: [], ok: false }), shouldRunFundamental: () => true });
+    await runDecisionMaker('sig1', d);
+    expect(d.audit).toHaveBeenCalledWith(expect.objectContaining({ eventType: 'fundamental_fetch_failed' }));
+    expect(d.persist).toHaveBeenCalledWith(expect.objectContaining({
+      fundamentalStatus: 'ran', fundamentalFetchOk: false, fundamentalRead: FREAD,
+    }));
+  });
 ```
 
 > El test técnico existente `'camino feliz: persiste verdict + technical_read/model/tokens'` sigue
@@ -769,8 +785,7 @@ Expected: FAIL — `isMajorCap`/`fetchNews`/… no existen en `DecisionMakerDeps
 Reemplaza `src/lib/reasoning/run-decision-maker.ts` por:
 
 ```ts
-import type { Signal, Strategy } from '../scanner/types.ts';
-import type { IndicatorSnapshot } from '../scanner/types.ts';
+import type { Signal, Strategy, IndicatorSnapshot } from '../scanner/types.ts';
 import type { LlmVerdict } from './verdict-schema.ts';
 import type { TechnicalRead } from './technical-read-schema.ts';
 import type { FundamentalRead } from './fundamental-read-schema.ts';
@@ -1106,7 +1121,13 @@ export default defineWorkflow({
 });
 ```
 
-- [ ] **Step 4: Typecheck + suite completa**
+- [ ] **Step 4: Documentar `FUNDAMENTAL_MODEL` en `.env.example` (LOW-1)**
+
+Junto a `TECHNICAL_MODEL` (añadido en SP8) en `.env.example`, añade la línea (comentada o vacía,
+siguiendo el estilo de las demás): `FUNDAMENTAL_MODEL=` con un comentario `# default anthropic/claude-haiku-4-5`.
+El default funciona sin la variable; esto solo documenta la palanca para quien levante el stack.
+
+- [ ] **Step 5: Typecheck + suite completa**
 
 Run: `npm run typecheck && npm test`
 Expected: typecheck limpio; toda la suite verde (incluye Tasks 1-6). Cobertura ≥ 80%.
@@ -1114,14 +1135,14 @@ Expected: typecheck limpio; toda la suite verde (incluye Tasks 1-6). Cobertura �
 > **Verifica la línea roja antes de commitear:** confirma en el diff que `fundamentalAnalyst` lleva
 > `tools: []` y que `decisionAgent` no declara tools de mutación.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/skills/fundamental-read/SKILL.md src/skills/decision-protocol/SKILL.md src/workflows/decision-maker.ts
+git add src/skills/fundamental-read/SKILL.md src/skills/decision-protocol/SKILL.md src/workflows/decision-maker.ts .env.example
 git commit -m "feat: cablea analista fundamental en decision-maker (profile + skill + sesión dedicada, SP9)"
 ```
 
-- [ ] **Step 6: Smoke vivo (manual, no determinista — requiere DATABASE_URL, REDIS, ANTHROPIC_API_KEY, CRYPTOPANIC_API_KEY)**
+- [ ] **Step 7: Smoke vivo (manual, no determinista — requiere DATABASE_URL, REDIS, ANTHROPIC_API_KEY, CRYPTOPANIC_API_KEY)**
 
 Siembra una señal **BTC/USDT** real (major-cap, para que el gate considere el fundamental) y corre el
 workflow una vez:
