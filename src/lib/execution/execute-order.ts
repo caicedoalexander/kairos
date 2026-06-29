@@ -10,7 +10,7 @@ import type { TradingMode } from '../mode.ts';
 
 // La violación del índice parcial idx_positions_open_setup significa "ya hay una posición viva
 // para este setup" (carrera con otra señal): se trata como deduped, no como crash.
-function isOpenSetupViolation(err: unknown): boolean {
+export function isOpenSetupViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null
     && (err as { code?: string }).code === '23505'
     && (err as { constraint?: string }).constraint === 'idx_positions_open_setup';

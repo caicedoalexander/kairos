@@ -70,7 +70,7 @@ export interface BarOHLC { open: number; high: number; low: number; close: numbe
 export interface BracketResolution { hitType: 'sl' | 'tp'; exitPrice: number; exitFee: number; realizedPnl: number; }
 
 export interface ExecutionResult {
-  status: 'filled' | 'pending_execution' | 'duplicate' | 'deduped';
+  status: 'filled' | 'pending_execution' | 'duplicate' | 'deduped' | 'zero_fill' | 'emergency_closed';
   idempotencyKey: string;
   orderId: string;
   positionId: string | null;
