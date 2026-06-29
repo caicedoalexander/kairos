@@ -62,7 +62,7 @@ Hallazgos de la documentación real de Flue (`@flue/runtime` beta.5) que cambiar
 | **Decision-maker** | Workflow `evaluate-candidate` (su agente con `subagents`) | Carga el skill de doctrina, delega a los analistas, sintetiza, emite **veredicto estructurado** (Valibot). No ejecuta: propone. | Sonnet 4.6 → Opus en escalación |
 | **Analista técnico** | Subagente (profile en `subagents:[]`) | Interpreta los indicadores ya calculados. Solo lectura. | Haiku 4.5 |
 | **Analista fundamental** | Subagente | Trae y pesa noticias/sentimiento/on-chain. Solo lectura. | Haiku 4.5 |
-| **Control** | Agente continuo (`agents/control.ts`) | Interpreta comandos de WhatsApp (`/estado`, `/pausa`, `/cierra`). | Haiku 4.5 |
+| **Control** | Agente continuo (`agents/control.ts`) _(SP11: implementado como **workflow** `workflows/control-maker.ts`, invocado con `invoke()` — ver nota en §11 Flujo C)_ | Interpreta comandos de WhatsApp (`/estado`, `/pausa`, `/cierra`). | Haiku 4.5 |
 
 ### Capa 3 — Notificación (sin agente LLM)
 
@@ -126,6 +126,15 @@ Humano → Evolution API → canal custom Flue (valida firma) → dispatch(contr
    /modo X     → conmuta sim/testnet/live
    (texto)     → LLM interpreta intención → comando seguro
 ```
+
+> **(SP11 — desviación de diseño)** El control se implementa como **workflow** `workflows/control-maker.ts`
+> invocado con `invoke()` desde `processControlMessage` (no un agente continuo `dispatch`): cada
+> comando de WhatsApp es stateless, y Flue recomienda un workflow finito cuando el trabajo no
+> continúa entre mensajes. El parsing de comandos slash (`/estado`, `/pausa`, `/reanuda`) es
+> **determinista y sin LLM**; el LLM (Haiku low) solo clasifica texto libre en una de las intenciones
+> del picklist cerrado. Guardia H2: mensajes `fromMe:true` se descartan antes de procesar (evita el
+> lazo de realimentación con las respuestas salientes del propio bot). M2: ack-then-process — el
+> webhook responde 200 inmediatamente y procesa en background best-effort.
 
 ### Manejo de errores y casos límite
 
@@ -393,9 +402,10 @@ kairos/
 │  ├─ app.ts                   # rutas/middleware, health, control webhook
 │  ├─ db.ts                    # postgres() → store de Flue
 │  ├─ agents/
-│  │  └─ control.ts            # sesión de comandos WhatsApp (descubierto)
+│  │  └─ control.ts            # sesión de comandos WhatsApp (descubierto) [SP11: reemplazado por workflows/control-maker.ts]
 │  ├─ workflows/
-│  │  └─ evaluate-candidate.ts # pipeline decisión+riesgo+ejecución (descubierto)
+│  │  ├─ evaluate-candidate.ts # pipeline decisión+riesgo+ejecución (descubierto)
+│  │  └─ control-maker.ts      # (SP11) workflow de control WhatsApp — clasifica texto libre con LLM; slash-commands son deterministas
 │  ├─ channels/
 │  │  └─ evolution.ts          # canal custom WhatsApp inbound (descubierto)
 │  ├─ subagents/               # profiles (importados, no descubiertos)

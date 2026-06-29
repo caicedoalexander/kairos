@@ -1,3 +1,7 @@
+// Mocks hoisted by Vitest — se aplican a imports estáticos y dinámicos del canal.
+vi.mock('../../workflows/control-maker.ts', () => ({ default: {} }));
+vi.mock('@flue/runtime', () => ({ invoke: vi.fn(), defineTool: vi.fn((x: unknown) => x) }));
+
 import { describe, test, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
 import { migrate } from '../../db/migrate.ts';
 import { pool, query } from '../../db/pool.ts';
@@ -6,6 +10,9 @@ import {
   extractSenderNumber,
   isAuthorizedSender,
   handleEvolutionWebhook,
+  isFromMe,
+  extractMessageText,
+  processControlMessage,
 } from '../evolution.ts';
 
 beforeAll(async () => {
@@ -54,6 +61,42 @@ describe('extractSenderNumber / isAuthorizedSender', () => {
   });
 });
 
+describe('isFromMe (H2)', () => {
+  test('detecta fromMe true/false', () => {
+    expect(isFromMe({ data: { key: { fromMe: true } } })).toBe(true);
+    expect(isFromMe({ data: { key: { fromMe: false } } })).toBe(false);
+    expect(isFromMe({})).toBe(false);
+  });
+});
+
+describe('extractMessageText (L2)', () => {
+  test('lee conversation y extendedTextMessage.text', () => {
+    expect(extractMessageText({ data: { message: { conversation: '/estado' } } })).toBe('/estado');
+    expect(extractMessageText({ data: { message: { extendedTextMessage: { text: 'hola' } } } })).toBe('hola');
+    expect(extractMessageText({ data: { message: {} } })).toBeNull();
+  });
+});
+
+describe('processControlMessage', () => {
+  test('comando slash → dispatch + reply (sin invoke)', async () => {
+    const dispatch = vi.fn(async () => 'OK estado');
+    const reply = vi.fn(async () => {});
+    const invoke = vi.fn();
+    await processControlMessage('/estado', '123', { dispatch, reply, invoke } as never);
+    expect(dispatch).toHaveBeenCalledWith({ command: 'estado' }, expect.anything());
+    expect(reply).toHaveBeenCalledWith('OK estado', '123');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+  test('texto libre → invoke (sin dispatch directo)', async () => {
+    const dispatch = vi.fn();
+    const reply = vi.fn();
+    const invoke = vi.fn(async () => {});
+    await processControlMessage('¿cómo va?', '123', { dispatch, reply, invoke } as never);
+    expect(invoke).toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+});
+
 describe('handleEvolutionWebhook', () => {
   test('secreto inválido → 401 y no audita', async () => {
     const res = await handleEvolutionWebhook(headers('wrong'), inbound('573001234567@s.whatsapp.net'));
@@ -74,6 +117,12 @@ describe('handleEvolutionWebhook', () => {
 
   test('válido pero remitente no autorizado → 200 sin acción', async () => {
     const res = await handleEvolutionWebhook(headers('top-secret'), inbound('999@s.whatsapp.net'));
+    expect(res.status).toBe(200);
+  });
+
+  test('fromMe true → 200 sin procesar (H2 cableado en el webhook)', async () => {
+    const body = { data: { key: { remoteJid: `${process.env.WHATSAPP_CONTROL_NUMBER ?? '111'}@s.whatsapp.net`, fromMe: true } } };
+    const res = await handleEvolutionWebhook(headers(process.env.EVOLUTION_WEBHOOK_SECRET ?? 'test'), body);
     expect(res.status).toBe(200);
   });
 });

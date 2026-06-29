@@ -1,6 +1,12 @@
 // flue-blueprint: channel/evolution@1
 import type { Handler } from 'hono';
 import { appendAuditLog } from '../db/repositories/audit-log.ts';
+import { parseSlashCommand } from '../lib/control/parse-control.ts';
+import { dispatchControl, type DispatchDeps } from '../lib/control/dispatch-control.ts';
+import { getOpenPositions } from '../db/repositories/positions.ts';
+import { setPaused } from '../db/repositories/bot-state.ts';
+import { getMode } from '../lib/mode.ts';
+import { sendWhatsApp } from '../notify/whatsapp.ts';
 
 // Verifica el secreto compartido del webhook (header x-evolution-secret vs. EVOLUTION_WEBHOOK_SECRET).
 export function verifyEvolutionWebhook(headers: Headers): boolean {
@@ -22,14 +28,54 @@ export function isAuthorizedSender(number: string | null): boolean {
   return number !== null && number === process.env.WHATSAPP_CONTROL_NUMBER;
 }
 
-// Lógica del webhook: verificar → autorizar → auditar → status. dispatch al control = Fase 2.
+// H2: descarta la propia respuesta saliente del bot (evita el lazo de realimentación).
+export function isFromMe(body: unknown): boolean {
+  return (body as { data?: { key?: { fromMe?: boolean } } })?.data?.key?.fromMe === true;
+}
+
+// L2: extrae el texto del mensaje (dos formas reales del payload Evolution).
+export function extractMessageText(body: unknown): string | null {
+  const m = (body as { data?: { message?: { conversation?: string; extendedTextMessage?: { text?: string } } } })?.data?.message;
+  return m?.conversation ?? m?.extendedTextMessage?.text ?? null;
+}
+
+interface ControlRouteDeps {
+  dispatch: (intent: { command: 'estado' | 'pausa' | 'reanuda' | 'unknown' }, deps: DispatchDeps) => Promise<string>;
+  reply: (text: string, to: string) => Promise<unknown>;
+  invoke: (text: string, sender: string) => Promise<unknown>;
+}
+
+const DEFAULT_ROUTE: ControlRouteDeps = {
+  dispatch: dispatchControl,
+  reply: (text, to) => sendWhatsApp(text, to),
+  invoke: async (text, sender) => {
+    const { invoke } = await import('@flue/runtime');
+    const controlMaker = (await import('../workflows/control-maker.ts')).default;
+    return invoke(controlMaker, { input: { text, sender } });
+  },
+};
+
+// Rutea el mensaje: comando slash → dispatch determinista + reply; texto libre → invoke (LLM).
+export async function processControlMessage(
+  text: string, sender: string, route: ControlRouteDeps = DEFAULT_ROUTE,
+): Promise<void> {
+  const slash = parseSlashCommand(text);
+  if (slash) {
+    // H-1: getOpenPositions exige `mode`; se envuelve con getMode().
+    const replyText = await route.dispatch(slash, { getOpenPositions: () => getOpenPositions(getMode()), setPaused });
+    await route.reply(replyText, sender);
+  } else {
+    await route.invoke(text, sender); // texto libre → control-maker (Haiku)
+  }
+}
+
+// Lógica del webhook: verificar → descartar fromMe → autorizar → auditar → dispatch best-effort.
 export async function handleEvolutionWebhook(
   headers: Headers,
   body: unknown,
 ): Promise<{ status: number }> {
-  if (!verifyEvolutionWebhook(headers)) {
-    return { status: 401 };
-  }
+  if (!verifyEvolutionWebhook(headers)) return { status: 401 };
+  if (isFromMe(body)) return { status: 200 }; // H2: evita lazo con los mensajes salientes propios
   const sender = extractSenderNumber(body);
   if (!isAuthorizedSender(sender)) {
     // Entrega válida pero no autorizada: se ignora silenciosamente (200 para no reintentar).
@@ -40,6 +86,17 @@ export async function handleEvolutionWebhook(
     actor: sender ?? 'unknown',
     payload: { received: true },
   });
+  const text = extractMessageText(body);
+  if (text && sender) {
+    // M2: ack-then-process — no bloquear el 200 con DB/fetch saliente; best-effort.
+    void processControlMessage(text, sender).catch((err) => {
+      void appendAuditLog({
+        eventType: 'control_dispatch_failed',
+        actor: sender,
+        payload: { error: err instanceof Error ? err.message : String(err) },
+      }).catch(() => {});
+    });
+  }
   return { status: 200 };
 }
 
