@@ -15,7 +15,7 @@ export interface TaskSession {
 // (en su profile) le dice CÓMO interpretarlo. Juzga, no calcula. Sin failover propio en SP8 —
 // la degradación la maneja runDecisionMaker (best-effort).
 export async function analyzeTechnical(
-  session: TaskSession, args: Record<string, unknown>, model?: string,
+  session: TaskSession, args: Record<string, unknown>, model?: string, // si se omite, session.task usa el modelo por defecto del profile del subagente
 ): Promise<{ read: TechnicalRead; modelUsed: string; tokens: number | null }> {
   const text =
     'Evalúa la lectura técnica de este candidato y emite el technical_read estructurado ' +

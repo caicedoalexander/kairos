@@ -1,6 +1,6 @@
 import { describe, test, expect, vi } from 'vitest';
 import { analyzeTechnical, type TaskSession } from './analyze-technical.ts';
-import type { TechnicalRead } from './technical-read-schema.ts';
+import { TechnicalReadSchema, type TechnicalRead } from './technical-read-schema.ts';
 
 const READ: TechnicalRead = {
   bias: 'bullish', confluence: 'moderate', regime: 'trending',
@@ -24,7 +24,7 @@ describe('analyzeTechnical', () => {
     expect(s.task).toHaveBeenCalledWith(
       expect.stringContaining('BTC/USDT'),
       // result: debe ir siempre — fuerza la salida estructurada Valibot (no degradar el contrato).
-      expect.objectContaining({ agent: 'technical-analyst', model: 'anthropic/claude-haiku-4-5', result: expect.anything() }),
+      expect.objectContaining({ agent: 'technical-analyst', model: 'anthropic/claude-haiku-4-5', result: TechnicalReadSchema }),
     );
   });
 
