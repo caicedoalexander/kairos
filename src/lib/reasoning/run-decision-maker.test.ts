@@ -86,7 +86,10 @@ describe('runDecisionMaker', () => {
     const d = deps({ analyze: async () => { throw new Error('haiku caído'); } });
     const r = await runDecisionMaker('sig1', d);
     expect(r.kind).toBe('persisted');
-    expect(d.audit).toHaveBeenCalledWith(expect.objectContaining({ eventType: 'technical_read_failed' }));
+    expect(d.audit).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'technical_read_failed',
+      payload: expect.objectContaining({ error: 'haiku caído', errorType: 'Error' }),
+    }));
     expect(d.persist).toHaveBeenCalledWith(expect.objectContaining({ technicalRead: null, technicalModel: null, technicalTokens: null }));
   });
 
