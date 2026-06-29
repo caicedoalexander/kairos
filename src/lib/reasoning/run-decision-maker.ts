@@ -119,7 +119,7 @@ export async function runDecisionMaker(signalId: string, deps: DecisionMakerDeps
       await deps.audit({
         eventType: 'shadow_failed', actor: 'decision-maker',
         payload: { signalId, error, technicalRead: tech.read, technicalModel: tech.model, technicalTokens: tech.tokens,
-          fundamentalRead: fund.read, fundamentalStatus: fund.status },
+          fundamentalRead: fund.read, fundamentalModel: fund.model, fundamentalTokens: fund.tokens, fundamentalStatus: fund.status },
       });
     } catch { /* best-effort */ }
     return { kind: 'failed', error };

@@ -39,6 +39,12 @@ describe('shadow_verdicts repo', () => {
     expect(row?.fundamentalTokens).toBe(222);
     expect(row?.fundamentalStatus).toBe('ran');
     expect(row?.fundamentalFetchOk).toBe(true);
+    expect(row?.modelUsed).toBe('anthropic/claude-sonnet-4-6');
+    expect(row?.tokens).toBe(1234);
+    expect((row?.verdict as { action: string }).action).toBe('enter');
+    expect((row?.technicalRead as { bias: string }).bias).toBe('bullish');
+    expect(row?.technicalModel).toBe('anthropic/claude-haiku-4-5');
+    expect(row?.technicalTokens).toBe(321);
   });
 
   test('fundamental omitido: read null + status + fetch_ok null se persisten', async () => {

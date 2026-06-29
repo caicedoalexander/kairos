@@ -46,7 +46,7 @@ const decisionAgent = defineAgent(() => ({
   thinkingLevel: 'high',
   skills: [decisionProtocol],
   subagents: [technicalAnalyst, fundamentalAnalyst],
-  // SIN tools de mutación: el decision-maker solo emite veredicto (línea roja).
+  tools: [], // línea roja: SIN tools de mutación — el decision-maker solo emite veredicto.
 }));
 
 export default defineWorkflow({
