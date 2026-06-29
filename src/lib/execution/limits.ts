@@ -11,3 +11,6 @@ export const DEFAULT_SIM_PARAMS: SimParams = { spread_bps: 4, slippage_bps: 5, f
 
 // Equity de arranque del sim si no hay snapshot previo.
 export const DEFAULT_SIM_STARTING_EQUITY = 10000;
+
+// Lock por setup (SP12): TTL que acota el peor caso entrada + OCO(retries) + cierre de emergencia.
+export const SETUP_LOCK_TTL_MS = 45_000;
