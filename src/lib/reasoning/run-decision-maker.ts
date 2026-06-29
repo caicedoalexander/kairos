@@ -27,6 +27,11 @@ export type DecisionOutcome =
 // Orquestación determinista del shadow eval: carga la señal/estrategia, llama al LLM (vía deps.evaluate
 // con failover), persiste el veredicto. Best-effort: un fallo del modelo se audita y NUNCA se propaga.
 export async function runDecisionMaker(signalId: string, deps: DecisionMakerDeps): Promise<DecisionOutcome> {
+  // Best-effort acotado: SOLO el fallo del modelo (deps.evaluate) se traga y se audita como
+  // shadow_failed (es el modo de fallo esperado, que queremos visible en el dominio). Las deps de
+  // infraestructura (getSignal/isAlreadyEvaluated/getStrategy/persist) propagan a propósito: en el
+  // diseño fire-and-forget (el shadow worker hace invoke() y olvida), un error de infra se registra
+  // como un run de Flue fallido, no como un reintento. No envolver toda la función.
   const signal = await deps.getSignal(signalId);
   if (!signal) return { kind: 'not_found' };
   if (await deps.isAlreadyEvaluated(signalId)) return { kind: 'duplicate' };
@@ -48,7 +53,11 @@ export async function runDecisionMaker(signalId: string, deps: DecisionMakerDeps
     return { kind: 'persisted', verdict };
   } catch (err: unknown) {
     const error = err instanceof Error ? err.message : String(err);
-    try { await deps.audit({ eventType: 'shadow_failed', actor: 'decision-maker', payload: { signalId, error } }); } catch { /* best-effort: ni el audit puede tumbar el shadow */ }
+    try {
+      await deps.audit({ eventType: 'shadow_failed', actor: 'decision-maker', payload: { signalId, error } });
+    } catch {
+      /* best-effort: ni el audit puede tumbar el shadow */
+    }
     return { kind: 'failed', error };
   }
 }

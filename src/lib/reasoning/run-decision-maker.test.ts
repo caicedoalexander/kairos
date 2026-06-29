@@ -43,11 +43,12 @@ describe('runDecisionMaker', () => {
   });
 
   test('ya evaluada → duplicate, no evalúa ni persiste', async () => {
-    const d = deps({ isAlreadyEvaluated: async () => true, evaluate: vi.fn(), persist: vi.fn() });
+    const d = deps({ isAlreadyEvaluated: async () => true, evaluate: vi.fn(), persist: vi.fn(), getStrategy: vi.fn() });
     const r = await runDecisionMaker('sig1', d);
     expect(r.kind).toBe('duplicate');
     expect(d.evaluate).not.toHaveBeenCalled();
     expect(d.persist).not.toHaveBeenCalled();
+    expect(d.getStrategy).not.toHaveBeenCalled();
   });
 
   test('fallo del modelo → failed + audita shadow_failed, NO lanza', async () => {
