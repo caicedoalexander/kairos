@@ -481,6 +481,7 @@ export default defineWorkflow({
 
 - `.env.example`: reemplaza la línea `DECISION_MODEL_ESCALATION=...` (si existe) por `ESCALATION_MODEL=` con comentario `# default anthropic/claude-opus-4-6 (confirmar id en flue dev)`.
 - `ARCHITECTURE.md` §300: tras "La orquestación envuelve la llamada y reintenta en un modelo alterno ante error de proveedor", añade una nota: "**(SP10)** La resiliencia reintenta el **mismo** modelo; la escalación a Opus es una **segunda pasada deliberada** gobernada por `shouldEscalate` (no un fallback de resiliencia)." En §296, añade que en sombra solo aplican confianza-baja y contradicción-de-analistas (notional/primera-op-live se cablean con equity en testnet/live).
+- **Actualiza el comment de `src/lib/reasoning/evaluate-with-failover.ts` (H-1):** las líneas 24-27 prometen `sessionFactory` "en SP10". SP10 introduce `escSession` para la pasada Opus (sesión limpia) pero **no** el sessionFactory del failover Sonnet→Sonnet. Reemplaza ese comment por: "SP10: la pasada Opus de escalación usa una sesión dedicada (`escSession`) para juicio limpio. El failover Sonnet→Sonnet (mismo modelo, solo resiliencia ante blip) sigue compartiendo `session` — tolerable en sombra/best-effort; la sesión fresca por intento del failover queda como deuda diferida (no necesaria mientras escalación y resiliencia están separadas)."
 
 - [ ] **Step 5: Typecheck + suite completa**
 
@@ -509,6 +510,10 @@ git commit -m "feat: cablea escalación Opus + risk-policy en decision-maker (SP
 - Produces: `interface ABRow { signalId: string; llmVerdict: LlmVerdict; llmEscalated: boolean; detVerdict: Verdict | null; realizedPnl: number | null; positionClosed: boolean }`; `getShadowVsDeterministic(exec?: Executor): Promise<ABRow[]>`. Tarea 6 consume `ABRow`.
 
 > **Anclaje (H1):** ancla en `shadow_verdicts`, `LEFT JOIN decisions` por `signal_id`, `LEFT JOIN positions` por `decision_id`. `detVerdict=null` ⟺ el determinista no entró (fila de decisión ausente).
+>
+> **Dependencia (M-1):** independiente de T3/T4, pero **requiere T2 completado** — el helper de test
+> `fullShadowRow` setea `escalated: false`, que no existe en `ShadowVerdictRow` hasta T2 (typecheck
+> fallaría). Ejecuta T5 después de T2.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -573,6 +578,19 @@ describe('getShadowVsDeterministic', () => {
     expect(rows[0].positionClosed).toBe(false);
     expect(rows[0].realizedPnl).toBeNull();
   });
+
+  test('det enter con posición ABIERTA (aún en curso) → detVerdict presente, positionClosed false, realizedPnl null', async () => {
+    const signalId = await seedSignal();
+    await insertShadowVerdict(fullShadowRow(signalId));
+    const dec = await persistDecision(signalId, DET);
+    await query(`INSERT INTO kairos.positions (id, symbol, side, entry, size, sl, tp, status, realized_pnl, strategy_id, mode, decision_id)
+                 VALUES ('pos-abreport-open', $1, 'long', 100, 1, 97, 106, 'open', 0, $2, 'sim', $3)`, [SYMBOL, STRATEGY_ID, dec.id]);
+    const rows = (await getShadowVsDeterministic()).filter((r) => r.signalId === signalId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].detVerdict?.action).toBe('enter');
+    expect(rows[0].positionClosed).toBe(false);
+    expect(rows[0].realizedPnl).toBeNull();
+  });
 });
 ```
 
@@ -605,13 +623,19 @@ interface RawRow {
 
 // Read-only. Ancla en shadow_verdicts (tiene enter Y skip del LLM); LEFT JOIN decisions (presente
 // solo en det-enter, H1) y positions (resultado en sim). detVerdict null = el determinista no entró.
+// DISTINCT ON (signal_id) (M-2): shadow_verdicts es UNIQUE(signal_id), pero decisions NO tiene UNIQUE
+// (signal_id). El job-dedup (jobId=signalId) hace que en la práctica haya 1 decisión por señal; el
+// DISTINCT ON es una guarda defensiva (toma la decisión más reciente) para que el reporte no duplique
+// conteos si alguna vez hubiera dos.
 export async function getShadowVsDeterministic(exec: Executor = query): Promise<ABRow[]> {
   const rows = await exec<RawRow>(
-    `SELECT sv.signal_id, sv.verdict AS llm_verdict, sv.escalated,
+    `SELECT DISTINCT ON (sv.signal_id)
+            sv.signal_id, sv.verdict AS llm_verdict, sv.escalated,
             d.verdict AS det_verdict, p.realized_pnl, p.status AS pos_status
        FROM kairos.shadow_verdicts sv
        LEFT JOIN kairos.decisions d ON d.signal_id = sv.signal_id
-       LEFT JOIN kairos.positions p ON p.decision_id = d.id`,
+       LEFT JOIN kairos.positions p ON p.decision_id = d.id
+      ORDER BY sv.signal_id, d.created_at DESC NULLS LAST`,
   );
   return rows.map((r) => {
     const closed = r.pos_status === 'closed';
@@ -884,7 +908,13 @@ hacinamiento). Verifica:
 > `escalated=false`, `model_used`=Sonnet, y un audit `escalation_failed`. En ese caso, ajusta
 > `ESCALATION_MODEL` en `.env` al id de Opus correcto (verificar con `flue dev` / catálogo) y repite.
 
-Luego corre el reporte: `npm run shadow-report` — debe mostrar la señal escalada en `escalationRate`.
+**Segundo smoke — candidato normal (L-1):** siembra una señal **BTC/USDT con derivados normales**
+(`fundingZ=0.5`, `oiChangePct=3`) y técnico/fundamental probablemente alineados (sin contradicción) y
+confianza no-baja → **no debe escalar**. Corre el mismo `flue run` y verifica `escalated=false`,
+`model_used`=Sonnet en su fila. Esto cubre los dos escenarios del spec (escala / no escala) end-to-end.
+
+Luego corre el reporte: `npm run shadow-report` — debe mostrar la señal escalada en `escalationRate`
+y la normal sin escalar.
 
 > Limpieza tras el smoke: borrar la señal sintética + su `shadow_verdicts` (y cualquier `decisions`/
 > `positions` si se crearon) del dev DB, como en SP8/SP9.
