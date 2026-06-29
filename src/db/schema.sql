@@ -230,3 +230,11 @@ CREATE TABLE IF NOT EXISTS kairos.backtest_runs (
 -- Idempotente para DBs migradas antes de SP4 (CREATE IF NOT EXISTS no altera columnas existentes).
 ALTER TABLE kairos.backtest_runs ADD COLUMN IF NOT EXISTS symbol text;
 ALTER TABLE kairos.backtest_runs ADD COLUMN IF NOT EXISTS trades jsonb NOT NULL DEFAULT '[]'::jsonb;
+
+-- SP11: estado del bot (kill-switch). Single-row.
+CREATE TABLE IF NOT EXISTS kairos.bot_state (
+  id         text PRIMARY KEY DEFAULT 'singleton',
+  paused     boolean NOT NULL DEFAULT false,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO kairos.bot_state (id) VALUES ('singleton') ON CONFLICT (id) DO NOTHING;
