@@ -155,4 +155,12 @@ describe('evaluateCandidate', () => {
     expect(outcome.kind).toBe('not_found');
     expect(notify).not.toHaveBeenCalled();
   });
+
+  test('kill-switch ON: retorna skipped sin ejecutar (H1)', async () => {
+    const notify = vi.fn(async () => ({ messageId: null }));
+    const r = await evaluateCandidate('cualquier-signal', { isPaused: async () => true, notify });
+    expect(r.kind).toBe('skipped');
+    expect((r as { reason: string }).reason).toMatch(/kill-switch/i);
+    expect(notify).not.toHaveBeenCalled();
+  });
 });

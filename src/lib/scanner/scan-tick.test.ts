@@ -9,6 +9,7 @@ function strat(id: string, symbols: string[]): Strategy {
 describe('runScanTick', () => {
   test('escanea cada símbolo de cada estrategia activa', async () => {
     const deps = {
+      isPaused: async () => false,
       getStrategies: async () => [strat('a', ['BTC/USDT', 'ETH/USDT']), strat('b', ['SOL/USDT'])],
       scan: vi.fn(async () => null),
       enqueue: vi.fn(async () => {}),
@@ -23,6 +24,7 @@ describe('runScanTick', () => {
     const scan = vi.fn(async (_s: Strategy, symbol: string) => (symbol === 'BTC/USDT' ? 'SIG-BTC' : null));
     const enqueue = vi.fn(async () => {});
     const res = await runScanTick(new Date('2026-03-07T00:00:00Z'), {
+      isPaused: async () => false,
       getStrategies: async () => [strat('a', ['BTC/USDT', 'ETH/USDT'])], scan, enqueue,
     });
     expect(res).toEqual({ scanned: 2, fired: 1, enqueued: 1 });
@@ -37,6 +39,7 @@ describe('runScanTick', () => {
     const enqueue = vi.fn(async () => {});
     const onError = vi.fn(async () => {});
     const res = await runScanTick(new Date('2026-03-07T00:00:00Z'), {
+      isPaused: async () => false,
       getStrategies: async () => [strat('a', ['BTC/USDT', 'ETH/USDT'])], scan, enqueue, onError,
     });
     expect(res.scanned).toBe(2);
@@ -56,6 +59,7 @@ describe('runScanTick', () => {
     const onError = vi.fn(async () => {});
     const onEnqueueError = vi.fn(async () => {});
     const res = await runScanTick(new Date('2026-03-07T00:00:00Z'), {
+      isPaused: async () => false,
       getStrategies: async () => [strat('a', ['BTC/USDT', 'ETH/USDT'])],
       scan,
       enqueue,
@@ -68,5 +72,15 @@ describe('runScanTick', () => {
     expect(onError).not.toHaveBeenCalled();
     // enqueue_error se llama con los args correctos, incluido signalId.
     expect(onEnqueueError).toHaveBeenCalledExactlyOnceWith('a', 'BTC/USDT', 'SIG-BTC', expect.any(Error));
+  });
+
+  test('pausado → no recorre estrategias, retorna ceros y audita scan_paused', async () => {
+    const getStrategies = vi.fn(async () => []);
+    const onError = vi.fn(async () => {});
+    const result = await runScanTick(new Date('2026-06-29T00:00:00Z'), {
+      isPaused: async () => true, getStrategies, scan: vi.fn(), enqueue: vi.fn(), onError, onEnqueueError: vi.fn(),
+    });
+    expect(result).toEqual({ scanned: 0, fired: 0, enqueued: 0 });
+    expect(getStrategies).not.toHaveBeenCalled();
   });
 });

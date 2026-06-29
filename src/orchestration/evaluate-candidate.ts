@@ -10,6 +10,7 @@ import { sendWhatsApp } from '../notify/whatsapp.ts';
 import { appendAuditLog } from '../db/repositories/audit-log.ts';
 import { hasOpenPositionForSetup } from '../db/repositories/positions.ts';
 import { notifyBestEffort } from '../notify/best-effort.ts';
+import { getPaused } from '../db/repositories/bot-state.ts';
 import type { ExecutionResult } from '../lib/execution/types.ts';
 
 export type EvaluateOutcome =
@@ -19,16 +20,25 @@ export type EvaluateOutcome =
   | { kind: 'not_found' };
 
 export interface EvaluateDeps {
+  isPaused: () => Promise<boolean>;
   notify: (text: string, to?: string) => Promise<{ messageId: string | null }>;
   riskState?: GatheredState; // solo para tests (igual que checkRiskForDecision.injected)
 }
 
-const DEFAULT_DEPS: EvaluateDeps = { notify: sendWhatsApp };
+const DEFAULT_DEPS: EvaluateDeps = { isPaused: getPaused, notify: sendWhatsApp };
 
 // Orquestador determinista de entrada (sin LLM). Idempotente vía executeOrderSim (idempotency_key=signalId).
 export async function evaluateCandidate(signalId: string, deps: Partial<EvaluateDeps> = {}): Promise<EvaluateOutcome> {
-  const { notify, riskState } = { ...DEFAULT_DEPS, ...deps };
+  const { notify, riskState, isPaused } = { ...DEFAULT_DEPS, ...deps };
   const mode = getMode();
+
+  // H1: kill-switch duro — bloquea la ejecución de jobs ya encolados antes de /pausa (§53).
+  if (await isPaused()) {
+    try {
+      await appendAuditLog({ eventType: 'kill_switch_blocked', actor: 'evaluate-candidate', payload: { signalId, mode } });
+    } catch { /* best-effort */ }
+    return { kind: 'skipped', reason: 'kill-switch: bot pausado' };
+  }
 
   const signal = await getSignalById(signalId);
   if (!signal) return { kind: 'not_found' };

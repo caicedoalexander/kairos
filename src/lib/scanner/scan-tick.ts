@@ -1,10 +1,13 @@
 import { getEnabledStrategies } from '../../db/repositories/strategies.ts';
+import { getPaused } from '../../db/repositories/bot-state.ts';
 import { scanSymbol } from './scan-symbol.ts';
 import { enqueueEvaluateCandidate } from '../queue/evaluate-queue.ts';
 import { appendAuditLog } from '../../db/repositories/audit-log.ts';
 import type { Strategy } from './types.ts';
 
 export interface ScanTickDeps {
+  /** Kill-switch: si true, el tick no dispara (optimización: evita encolar). Default getPaused. */
+  isPaused: () => Promise<boolean>;
   getStrategies: () => Promise<Strategy[]>;
   scan: (strategy: Strategy, symbol: string, asOf: Date) => Promise<string | null>;
   enqueue: (signalId: string) => Promise<void>;
@@ -16,6 +19,7 @@ export interface ScanTickDeps {
 export interface ScanTickResult { scanned: number; fired: number; enqueued: number; }
 
 const DEFAULT_DEPS: ScanTickDeps = {
+  isPaused: getPaused,
   getStrategies: getEnabledStrategies,
   scan: scanSymbol,
   enqueue: enqueueEvaluateCandidate,
@@ -74,6 +78,14 @@ async function processSymbol(
 // un fallo en cualquiera se aísla por símbolo y el tick continúa.
 export async function runScanTick(asOf: Date, deps: Partial<ScanTickDeps> = {}): Promise<ScanTickResult> {
   const resolved = { ...DEFAULT_DEPS, ...deps };
+
+  if (await resolved.isPaused()) {
+    try {
+      await appendAuditLog({ eventType: 'scan_paused', actor: 'scan_tick', payload: { asOf: asOf.toISOString() } });
+    } catch { /* best-effort */ }
+    return { scanned: 0, fired: 0, enqueued: 0 };
+  }
+
   const strategies = await resolved.getStrategies();
   let scanned = 0, fired = 0, enqueued = 0;
 
