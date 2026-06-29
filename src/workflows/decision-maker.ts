@@ -31,6 +31,8 @@ export default defineWorkflow({
       getSignal: getSignalById,
       getStrategy,
       isAlreadyEvaluated,
+      // analyze cablea el subagente técnico — Task 5 (SP8) reemplaza este stub con analyzeTechnical.
+      analyze: async () => { throw new Error('SP8-Task5 pendiente: cableado de analyzeTechnical'); },
       // ShadowEvalArgs satisface Record<string,unknown> en runtime; el cast resuelve la restricción nominal de TS.
       evaluate: (args) => evaluateWithFailover(session, args as unknown as Record<string, unknown>, MODELS),
       persist: insertShadowVerdict,

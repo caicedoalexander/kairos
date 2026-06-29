@@ -2,6 +2,8 @@ import { describe, test, expect, vi } from 'vitest';
 import { runDecisionMaker, type DecisionMakerDeps } from './run-decision-maker.ts';
 import type { Signal, Strategy } from '../scanner/types.ts';
 import type { LlmVerdict } from './verdict-schema.ts';
+import type { TechnicalRead } from './technical-read-schema.ts';
+const READ: TechnicalRead = { bias: 'bullish', confluence: 'strong', regime: 'trending', divergence: 'none', mtfNote: 'm', notes: 'n' };
 
 const SIGNAL: Signal = { strategyId: 's1', symbol: 'BTC/USDT', firedAt: new Date('2026-03-21T00:00:00Z'), snapshot: { byTimeframe: {}, mtfAlignment: 'aligned', levels: { support: null, resistance: null }, derivatives: { fundingZ: null, oiChangePct: null } } };
 const STRATEGY: Strategy = { id: 's1', enabled: true, symbols: ['BTC/USDT'], triggerConfig: { timeframes: { bias: '4h', context: '1h', trigger: '15m' }, entry: { all: [] } }, riskParams: { atr_stop_mult: 1.5 }, version: 1, skillName: null };
@@ -12,6 +14,7 @@ function deps(over: Partial<DecisionMakerDeps> = {}): DecisionMakerDeps {
     getSignal: async () => SIGNAL,
     getStrategy: async () => STRATEGY,
     isAlreadyEvaluated: async () => false,
+    analyze: async () => ({ read: READ, modelUsed: 'anthropic/claude-haiku-4-5', tokens: 50 }),
     evaluate: async () => ({ verdict: VERDICT, modelUsed: 'anthropic/claude-sonnet-4-6', tokens: 99 }),
     persist: vi.fn(async () => {}),
     audit: vi.fn(async () => {}),
@@ -62,5 +65,38 @@ describe('runDecisionMaker', () => {
     const d = deps({ persist: async () => { throw new Error('DB caída'); } });
     await expect(runDecisionMaker('sig1', d)).rejects.toThrow('DB caída');
     expect(d.audit).not.toHaveBeenCalled(); // no se mal-etiqueta como shadow_failed
+  });
+
+  test('camino feliz: persiste verdict + technical_read/model/tokens', async () => {
+    const d = deps();
+    const r = await runDecisionMaker('sig1', d);
+    expect(r.kind).toBe('persisted');
+    expect(d.persist).toHaveBeenCalledWith(expect.objectContaining({
+      technicalRead: READ, technicalModel: 'anthropic/claude-haiku-4-5', technicalTokens: 50,
+    }));
+  });
+
+  test('el technical_read viaja en los args de evaluate (clave snake_case)', async () => {
+    const evaluate = vi.fn(async () => ({ verdict: VERDICT, modelUsed: 'm', tokens: 1 }));
+    await runDecisionMaker('sig1', deps({ evaluate }));
+    expect(evaluate).toHaveBeenCalledWith(expect.objectContaining({ technical_read: READ }));
+  });
+
+  test('degradación: analista falla → technical_read null + audit, veredicto se emite igual', async () => {
+    const d = deps({ analyze: async () => { throw new Error('haiku caído'); } });
+    const r = await runDecisionMaker('sig1', d);
+    expect(r.kind).toBe('persisted');
+    expect(d.audit).toHaveBeenCalledWith(expect.objectContaining({ eventType: 'technical_read_failed' }));
+    expect(d.persist).toHaveBeenCalledWith(expect.objectContaining({ technicalRead: null, technicalModel: null, technicalTokens: null }));
+  });
+
+  test('R3: si evaluate falla tras analyze exitoso, shadow_failed lleva el read y tokens', async () => {
+    const d = deps({ evaluate: async () => { throw new Error('sonnet caído'); } });
+    const r = await runDecisionMaker('sig1', d);
+    expect(r.kind).toBe('failed');
+    expect(d.audit).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'shadow_failed',
+      payload: expect.objectContaining({ technicalRead: READ, technicalTokens: 50, technicalModel: 'anthropic/claude-haiku-4-5' }),
+    }));
   });
 });
