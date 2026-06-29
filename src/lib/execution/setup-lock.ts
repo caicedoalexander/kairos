@@ -40,3 +40,8 @@ export async function withSetupLock<T>(
     try { await client.eval(RELEASE_LUA, 1, key, token); } catch { /* best-effort; el TTL lo limpia */ }
   }
 }
+
+// Cierra la conexión singleton del lock (REDIS_URL) en el graceful shutdown; espeja closeBullConnection.
+export async function closeSetupLockConnection(): Promise<void> {
+  if (shared) { await shared.quit(); shared = null; }
+}

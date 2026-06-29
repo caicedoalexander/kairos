@@ -40,4 +40,14 @@ describe('withSetupLock', () => {
       .rejects.toThrow('boom');
     expect(client.eval).toHaveBeenCalledOnce();
   });
+
+  test('un release que falla en eval no oculta el resultado de fn (best-effort)', async () => {
+    const client = {
+      set: vi.fn(async () => 'OK'),
+      eval: vi.fn(async () => { throw new Error('redis eval failed'); }),
+    };
+    const result = await withSetupLock('s1', 'BTC/USDT', 'testnet', async () => 'done', { client });
+    expect(result).toBe('done'); // el error de eval se traga; el TTL limpia
+    expect(client.eval).toHaveBeenCalledOnce();
+  });
 });
