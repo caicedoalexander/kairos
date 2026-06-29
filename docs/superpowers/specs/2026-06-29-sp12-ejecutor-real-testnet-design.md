@@ -35,19 +35,33 @@ forma **durable** para el reconciler de SP13 — SP12 no pretende cerrar ese hue
 - **NO garantiza** (queda para SP13): (a) un **crash** del proceso entre el fill de entrada y la
   confirmación del OCO; (b) un **fill incierto** (NetworkError en la respuesta de `placeEntry` cuando
   la orden sí llenó). §18 (líneas 820-828) asigna ese hueco al **monitor/reconciler**, diferido a SP13.
-- **Marcadores durables que SP12 deja para el reconciler de SP13** (debe consultar **ambos**):
+- **Marcadores durables que SP12 deja para el reconciler de SP13** (debe consultar **los tres**):
   - `positions.protected = false` → posición real abierta cuya protección OCO **no** está confirmada
-    (incluye el crash-en-ventana, porque `protected` arranca en `false` y sólo se pone `true` tras
-    confirmar el OCO).
+    (incluye el crash-en-ventana tras `openPosition`, porque `protected` arranca en `false` y sólo se
+    pone `true` tras confirmar el OCO).
   - `orders.status = 'pending_execution'` con fill presente → entrada que pudo haber llenado en el
     exchange: fill incierto (paso 3) **o** carrera de setup con emergencia fallida (paso 4, donde no
     hay fila de posición; ver nota N1 en §Flujo).
+  - `orders.status = 'pending'` sin fill (I2, review final) → la orden quedó en su estado de claim
+    por defecto: un crash **entre** el fill real y la primera escritura DB (`insertFill`/`openPosition`)
+    deja la compra real sin fila de fill ni de posición. `findStuckEntryOrders` (orders.ts) ya
+    detecta exactamente `status='pending' AND sin fill`, pero el reconciler de SP13 **debe** escanear
+    también ese estado (no sólo `pending_execution`), añadiendo `AND created_at < now() - interval '5m'`.
 - **Riesgo residual declarado (L1):** el OCO usa STOP_LOSS_LIMIT. En un *gap* a la baja el precio
   puede saltar el límite y la leg SL no llenar → posición desprotegida pese a "OCO residente". El
   `STOP_LIMIT_OFFSET_BPS` reduce la probabilidad, no la elimina. La red real ante gap es el monitor
   app-managed de SP13. En testnet (play money) es aceptable.
 - **Gate operativo**: en SP12 sólo se corre **smoke vigilado** (una señal, owner mirando). El **loop
   testnet continuo y desatendido se habilita en SP13**, cuando el reconciler cierre el hueco.
+- **Precondición DURA de SP13 (I1, review final) — no asumir resuelta**: existe una ventana de
+  **doble-compra secuencial**. Si la entrada de la señal A llena en el exchange pero la respuesta se
+  pierde (NetworkError en la respuesta), A devuelve `pending_execution`, **no abre posición** y libera
+  el lock. Una señal B posterior del mismo setup pasa el re-check `hasOpenForSetup` (no hay posición)
+  y coloca una **segunda compra real** → doble exposición. El lock por setup sólo serializa señales
+  **concurrentes**, no una posterior tras un fill incierto. SP12 lo contiene **sólo** por el gate de
+  smoke vigilado de una sola señal. Antes de habilitar cualquier corrida desatendida, el reconciler de
+  SP13 **debe** reconciliar las entradas `pending_execution`/`pending` contra el exchange **antes** de
+  que el scanner dispare.
 
 ## Alcance
 
