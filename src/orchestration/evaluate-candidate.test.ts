@@ -181,9 +181,23 @@ describe('evaluateCandidate — despacho por modo (SP12)', () => {
     expect(realCalls).toBe(1);
     expect(outcome.kind).toBe('executed');
     if (outcome.kind === 'executed') expect(outcome.status).toBe('filled');
+    expect(notify).toHaveBeenCalledOnce();   // rama 'filled' notifica el ✅
     // NO se creó posición vía sim (el executeReal fake no escribe DB)
     const pos = await query(`SELECT 1 FROM kairos.positions WHERE symbol=$1`, [SYMBOL]);
     expect(pos.length).toBe(0);
+  });
+
+  test('en testnet con emergency_closed → executed/emergency_closed y notifica 🚨', async () => {
+    process.env.KAIROS_MODE = 'testnet';
+    const signalId = await insertSignal(enterSignal());
+    const notify = vi.fn(async (_text: string) => ({ messageId: 'm' }));
+    const outcome = await evaluateCandidate(signalId, {
+      notify, riskState: ALLOW_STATE,
+      executeReal: async () => ({ status: 'emergency_closed', idempotencyKey: signalId, orderId: 'o', positionId: null, fillPrice: null, qty: null, fee: null }),
+    });
+    expect(outcome).toEqual({ kind: 'executed', positionId: null, status: 'emergency_closed' });
+    expect(notify).toHaveBeenCalledOnce();
+    expect(notify.mock.calls[0][0]).toMatch(/emergencia/i);
   });
 
   test('en testnet con zero_fill → executed/zero_fill y notifica', async () => {
