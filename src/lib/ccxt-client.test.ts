@@ -1,5 +1,5 @@
-import { describe, test, expect, beforeEach, vi } from 'vitest';
-import { createPublicClient, createAuthenticatedClient, createPerpPublicClient } from './ccxt-client.ts';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createPublicClient, createAuthenticatedClient, createPerpPublicClient, getAuthenticatedClient, resetAuthenticatedClient } from './ccxt-client.ts';
 
 beforeEach(() => {
   vi.unstubAllEnvs();
@@ -33,5 +33,20 @@ describe('createPerpPublicClient', () => {
     const client = createPerpPublicClient();
     expect(client.id).toBe('binanceusdm');
     expect(client.apiKey).toBeFalsy();
+  });
+});
+
+describe('getAuthenticatedClient (singleton)', () => {
+  const OLD = { ...process.env };
+  beforeEach(() => { resetAuthenticatedClient(); process.env.BINANCE_API_KEY = 'k'; process.env.BINANCE_API_SECRET = 's'; process.env.KAIROS_MODE = 'testnet'; });
+  afterEach(() => { process.env = { ...OLD }; resetAuthenticatedClient(); });
+
+  test('devuelve la MISMA instancia en llamadas repetidas', () => {
+    expect(getAuthenticatedClient()).toBe(getAuthenticatedClient());
+  });
+
+  test('sandbox activo cuando KAIROS_MODE != live', () => {
+    const c = getAuthenticatedClient();
+    expect(c.urls['api']).not.toBe(undefined); // sandbox cambió urls
   });
 });

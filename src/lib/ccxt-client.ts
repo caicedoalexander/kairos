@@ -26,3 +26,16 @@ export function createAuthenticatedClient(): Exchange {
 export function createPerpPublicClient(): Exchange {
   return new ccxt.binanceusdm({ enableRateLimit: true });
 }
+
+let authClient: Exchange | null = null;
+
+// Singleton autenticado: una sola instancia por proceso (el skill ccxt advierte que múltiples
+// instancias con la misma key provocan conflictos de nonce). loadMarkets es perezoso (lo hace el caller).
+export function getAuthenticatedClient(): Exchange {
+  if (authClient) return authClient;
+  authClient = createAuthenticatedClient();
+  return authClient;
+}
+
+// Solo para tests: resetea el singleton.
+export function resetAuthenticatedClient(): void { authClient = null; }
