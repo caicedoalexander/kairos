@@ -164,3 +164,51 @@ describe('evaluateCandidate', () => {
     expect(notify).not.toHaveBeenCalled();
   });
 });
+
+describe('evaluateCandidate — despacho por modo (SP12)', () => {
+  const OLD_MODE = process.env.KAIROS_MODE;
+  afterEach(() => { process.env.KAIROS_MODE = OLD_MODE; });
+
+  test('en testnet rutea a executeReal (NO al sim) y mapea el outcome', async () => {
+    process.env.KAIROS_MODE = 'testnet';
+    const signalId = await insertSignal(enterSignal());
+    let realCalls = 0;
+    const notify = vi.fn(async () => ({ messageId: 'm' }));
+    const outcome = await evaluateCandidate(signalId, {
+      notify, riskState: ALLOW_STATE,
+      executeReal: async () => { realCalls++; return { status: 'filled', idempotencyKey: signalId, orderId: 'o', positionId: 'p', fillPrice: 100, qty: 0.01, fee: 0 }; },
+    });
+    expect(realCalls).toBe(1);
+    expect(outcome.kind).toBe('executed');
+    if (outcome.kind === 'executed') expect(outcome.status).toBe('filled');
+    // NO se creó posición vía sim (el executeReal fake no escribe DB)
+    const pos = await query(`SELECT 1 FROM kairos.positions WHERE symbol=$1`, [SYMBOL]);
+    expect(pos.length).toBe(0);
+  });
+
+  test('en testnet con zero_fill → executed/zero_fill y notifica', async () => {
+    process.env.KAIROS_MODE = 'testnet';
+    const signalId = await insertSignal(enterSignal());
+    const notify = vi.fn(async () => ({ messageId: 'm' }));
+    const outcome = await evaluateCandidate(signalId, {
+      notify, riskState: ALLOW_STATE,
+      executeReal: async () => ({ status: 'zero_fill', idempotencyKey: signalId, orderId: '', positionId: null, fillPrice: null, qty: null, fee: null }),
+    });
+    expect(outcome).toEqual({ kind: 'executed', positionId: null, status: 'zero_fill' });
+    expect(notify).toHaveBeenCalledOnce();
+  });
+
+  test('en sim NO se llama executeReal (rama intacta)', async () => {
+    process.env.KAIROS_MODE = 'sim';
+    const signalId = await insertSignal(enterSignal());
+    let realCalls = 0;
+    const outcome = await evaluateCandidate(signalId, {
+      notify: vi.fn(async () => ({ messageId: 'm' })), riskState: ALLOW_STATE,
+      executeReal: async () => { realCalls++; return { status: 'filled', idempotencyKey: signalId, orderId: '', positionId: null, fillPrice: null, qty: null, fee: null }; },
+    });
+    expect(realCalls).toBe(0);                  // sim usa executeOrderSim, no executeReal
+    expect(outcome.kind).toBe('executed');
+    const pos = await query(`SELECT 1 FROM kairos.positions WHERE symbol=$1`, [SYMBOL]);
+    expect(pos.length).toBe(1);                 // sim sí escribió la posición
+  });
+});
