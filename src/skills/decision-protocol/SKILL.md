@@ -21,6 +21,14 @@ mismo.
   snapshot (`bias`, `confluence`, `regime`, `divergence`, `mtfNote`, `notes`). Es **un insumo más**,
   no un oráculo: pésalo junto a tu propia lectura del snapshot. Si **no** viene (analista degradado),
   razona sobre el snapshot directamente como siempre.
+- `fundamental_read` *(opcional)*: lectura macro de un analista fundamental (`bias`, `catalysts[]`,
+  `positioning`, `decayNote?`, `confidence`). Viene **solo** cuando había algo que leer (catalizador
+  o derivados extremos en un major-cap); si no viene o es `null`, no hay señal fundamental y decide
+  la técnica. Pésalo según §17.4: **catalizador bajista relevante → veto** (`action: skip` o
+  `confianza: baja`); **`positioning: crowded_long` / derivados extremos → cautela** (baja
+  `sizingFactor`); **catalizador alcista + posicionamiento sano → refuerzo** (`confianza` alta, el
+  risk gate determinista sigue capando). No sobre-reacciones a un catalizador rancio (mira
+  `decayNote`).
 
 ## Cómo razonar
 
