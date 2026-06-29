@@ -51,6 +51,11 @@ export default defineWorkflow({
       getStrategy,
       isAlreadyEvaluated,
       analyze: (args) => analyzeTechnical(techSession, args as unknown as Record<string, unknown>, TECHNICAL_MODEL),
+      // SP9-Task7 reemplaza estos stubs con el cableado real (profile fundamental + sesión dedicada):
+      isMajorCap: () => false,
+      fetchNews: async () => ({ items: [], ok: false }),
+      shouldRunFundamental: () => false,
+      analyzeFundamental: async () => { throw new Error('SP9-Task7 pendiente: cableado de analyzeFundamental'); },
       evaluate: (args) => evaluateWithFailover(session, args as unknown as Record<string, unknown>, MODELS),
       persist: insertShadowVerdict,
       audit: appendAuditLog,

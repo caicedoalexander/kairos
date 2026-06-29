@@ -1,6 +1,8 @@
-import type { Signal, Strategy } from '../scanner/types.ts';
+import type { Signal, Strategy, IndicatorSnapshot } from '../scanner/types.ts';
 import type { LlmVerdict } from './verdict-schema.ts';
 import type { TechnicalRead } from './technical-read-schema.ts';
+import type { FundamentalRead } from './fundamental-read-schema.ts';
+import type { NewsItem } from '../sources/cryptopanic.ts';
 import type { ShadowVerdictRow } from '../../db/repositories/shadow-verdicts.ts';
 
 export interface ShadowEvalArgs {
@@ -8,17 +10,24 @@ export interface ShadowEvalArgs {
   snapshot: unknown;
   riskParams: Record<string, unknown>;
   timeframes: unknown;
-  technical_read?: TechnicalRead | null;   // lo inyecta la orquestación tras analyze (clave snake → skill)
+  technical_read?: TechnicalRead | null;
+  fundamental_read?: FundamentalRead | null;   // lo inyecta la orquestación tras el paso fundamental
 }
+
+type AuditFn = (entry: { eventType: string; actor: string; payload: Record<string, unknown> }) => Promise<unknown>;
 
 export interface DecisionMakerDeps {
   getSignal: (signalId: string) => Promise<Signal | null>;
   getStrategy: (strategyId: string) => Promise<Strategy | null>;
   isAlreadyEvaluated: (signalId: string) => Promise<boolean>;
   analyze: (args: ShadowEvalArgs) => Promise<{ read: TechnicalRead; modelUsed: string; tokens: number | null }>;
+  isMajorCap: (symbol: string) => boolean;
+  fetchNews: (symbol: string) => Promise<{ items: NewsItem[]; ok: boolean }>;
+  shouldRunFundamental: (news: NewsItem[], snapshot: IndicatorSnapshot) => boolean;
+  analyzeFundamental: (args: { symbol: string; news: NewsItem[]; derivatives: unknown }) => Promise<{ read: FundamentalRead; modelUsed: string; tokens: number | null }>;
   evaluate: (args: ShadowEvalArgs) => Promise<{ verdict: LlmVerdict; modelUsed: string; tokens: number | null }>;
   persist: (row: ShadowVerdictRow) => Promise<void>;
-  audit: (entry: { eventType: string; actor: string; payload: Record<string, unknown> }) => Promise<unknown>;
+  audit: AuditFn;
 }
 
 export type DecisionOutcome =
@@ -27,12 +36,62 @@ export type DecisionOutcome =
   | { kind: 'duplicate' }
   | { kind: 'failed'; error: string };
 
-// Orquestación determinista del shadow eval. Pasos:
-//   1. carga señal/estrategia (infra: propaga si falla);
-//   2. analyze (subagente técnico) con DEGRADACIÓN best-effort: fallo → technical_read=null + audit;
-//   3. evaluate (decision-protocol) con el read inyectado en args;
-//   4. persist read+veredicto. SOLO el fallo de evaluate se traga como shadow_failed (con el read
-//      para no perder costo/observabilidad, R3); persist propaga (infra), como en SP7.
+interface FundamentalOutcome {
+  read: FundamentalRead | null; model: string | null; tokens: number | null;
+  status: string; fetchOk: boolean | null;
+}
+
+// Paso fundamental CONDICIONAL y best-effort (SP9). isMajorCap antes del fetch; fetch best-effort
+// (fail → audit, sigue); analista solo si el gate pasa; fallo del analista → status='failed' + audit.
+async function runFundamentalStep(signalId: string, signal: Signal, deps: DecisionMakerDeps): Promise<FundamentalOutcome> {
+  if (!deps.isMajorCap(signal.symbol)) {
+    return { read: null, model: null, tokens: null, status: 'skipped_not_major', fetchOk: null };
+  }
+  let news: NewsItem[] = [];
+  let ok = false;
+  try {
+    const r = await deps.fetchNews(signal.symbol);
+    news = r.items; ok = r.ok;
+  } catch { ok = false; }   // fetchNews es best-effort por contrato; defensivo
+  if (!ok) {
+    try {
+      await deps.audit({ eventType: 'fundamental_fetch_failed', actor: 'fundamental-source', payload: { signalId, symbol: signal.symbol } });
+    } catch { /* best-effort */ }
+  }
+  if (!deps.shouldRunFundamental(news, signal.snapshot)) {
+    return { read: null, model: null, tokens: null, status: ok ? 'skipped_quiet' : 'skipped_fetch_failed', fetchOk: ok };
+  }
+  try {
+    const f = await deps.analyzeFundamental({ symbol: signal.symbol, news, derivatives: signal.snapshot.derivatives });
+    return { read: f.read, model: f.modelUsed, tokens: f.tokens, status: 'ran', fetchOk: ok };
+  } catch (err: unknown) {
+    const error = err instanceof Error ? err.message : String(err);
+    const errorType = err instanceof Error ? err.name : 'unknown';
+    try {
+      await deps.audit({ eventType: 'fundamental_read_failed', actor: 'fundamental-analyst', payload: { signalId, error, errorType } });
+    } catch { /* best-effort */ }
+    return { read: null, model: null, tokens: null, status: 'failed', fetchOk: ok };
+  }
+}
+
+// Paso técnico (SP8): lectura técnica con degradación best-effort.
+async function runTechnicalStep(signalId: string, args: ShadowEvalArgs, deps: DecisionMakerDeps): Promise<{ read: TechnicalRead | null; model: string | null; tokens: number | null }> {
+  try {
+    const a = await deps.analyze(args);
+    return { read: a.read, model: a.modelUsed, tokens: a.tokens };
+  } catch (err: unknown) {
+    const error = err instanceof Error ? err.message : String(err);
+    const errorType = err instanceof Error ? err.name : 'unknown';
+    try {
+      await deps.audit({ eventType: 'technical_read_failed', actor: 'technical-analyst', payload: { signalId, error, errorType } });
+    } catch { /* best-effort */ }
+    return { read: null, model: null, tokens: null };
+  }
+}
+
+// Orquestación determinista del shadow eval. Pasos: carga (infra propaga) → técnico (degrada) →
+// fundamental (condicional, degrada) → evaluate (decision-protocol) con los reads inyectados →
+// persist. SOLO el fallo de evaluate → shadow_failed; persist propaga (infra), como SP7/SP8.
 export async function runDecisionMaker(signalId: string, deps: DecisionMakerDeps): Promise<DecisionOutcome> {
   const signal = await deps.getSignal(signalId);
   if (!signal) return { kind: 'not_found' };
@@ -47,23 +106,10 @@ export async function runDecisionMaker(signalId: string, deps: DecisionMakerDeps
     timeframes: strategy.triggerConfig.timeframes,
   };
 
-  // Paso 2: lectura técnica con degradación. El read es enriquecimiento, no dependencia dura.
-  let technicalRead: TechnicalRead | null = null;
-  let technicalModel: string | null = null;
-  let technicalTokens: number | null = null;
-  try {
-    const a = await deps.analyze(args);
-    technicalRead = a.read; technicalModel = a.modelUsed; technicalTokens = a.tokens;
-  } catch (err: unknown) {
-    const error = err instanceof Error ? err.message : String(err);
-    const errorType = err instanceof Error ? err.name : 'unknown';
-    try {
-      await deps.audit({ eventType: 'technical_read_failed', actor: 'technical-analyst', payload: { signalId, error, errorType } });
-    } catch { /* best-effort: ni el audit puede tumbar el shadow */ }
-  }
+  const tech = await runTechnicalStep(signalId, args, deps);
+  const fund = await runFundamentalStep(signalId, signal, deps);
 
-  // Paso 3: veredicto, con el read inyectado en los args (snake_case → lo lee decision-protocol).
-  const evalArgs: ShadowEvalArgs = { ...args, technical_read: technicalRead };
+  const evalArgs: ShadowEvalArgs = { ...args, technical_read: tech.read, fundamental_read: fund.read };
   let evaluated: { verdict: LlmVerdict; modelUsed: string; tokens: number | null };
   try {
     evaluated = await deps.evaluate(evalArgs);
@@ -72,17 +118,19 @@ export async function runDecisionMaker(signalId: string, deps: DecisionMakerDeps
     try {
       await deps.audit({
         eventType: 'shadow_failed', actor: 'decision-maker',
-        payload: { signalId, error, technicalRead, technicalModel, technicalTokens },  // R3
+        payload: { signalId, error, technicalRead: tech.read, technicalModel: tech.model, technicalTokens: tech.tokens,
+          fundamentalRead: fund.read, fundamentalStatus: fund.status },
       });
     } catch { /* best-effort */ }
     return { kind: 'failed', error };
   }
 
-  // persist FUERA del try: si la DB falla aquí, propaga (infra, no fallo de modelo) → run Flue 'failed'.
   await deps.persist({
     signalId, verdict: evaluated.verdict, confianza: evaluated.verdict.confianza,
     razonamiento: evaluated.verdict.razonamiento, modelUsed: evaluated.modelUsed, tokens: evaluated.tokens,
-    technicalRead, technicalModel, technicalTokens,
+    technicalRead: tech.read, technicalModel: tech.model, technicalTokens: tech.tokens,
+    fundamentalRead: fund.read, fundamentalModel: fund.model, fundamentalTokens: fund.tokens,
+    fundamentalStatus: fund.status, fundamentalFetchOk: fund.fetchOk,
   });
   return { kind: 'persisted', verdict: evaluated.verdict };
 }
