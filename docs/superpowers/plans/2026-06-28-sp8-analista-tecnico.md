@@ -186,7 +186,20 @@ En `src/db/repositories/shadow-verdicts.test.ts`, reemplaza el cuerpo del test `
   });
 ```
 
-Y en el test `'ON CONFLICT DO NOTHING...'`, añade los 3 campos nuevos a ambas llamadas `insertShadowVerdict` (p. ej. `technicalRead: null, technicalModel: null, technicalTokens: null`) para que compile.
+Y reemplaza el test `'ON CONFLICT DO NOTHING...'` (líneas 36-43) por esta versión, con los 3 campos nuevos en ambas llamadas para que compile:
+
+```ts
+  test('ON CONFLICT DO NOTHING: reinsertar la misma señal no duplica ni lanza', async () => {
+    const signalId = await seedSignal();
+    await insertShadowVerdict({ signalId, verdict: {}, confianza: 'alta', razonamiento: null, modelUsed: 'm', tokens: null,
+      technicalRead: null, technicalModel: null, technicalTokens: null });
+    await insertShadowVerdict({ signalId, verdict: {}, confianza: 'baja', razonamiento: null, modelUsed: 'm2', tokens: null,
+      technicalRead: null, technicalModel: null, technicalTokens: null });
+    const rows = await query(`SELECT confianza FROM kairos.shadow_verdicts WHERE signal_id=$1`, [signalId]);
+    expect(rows.length).toBe(1);
+    expect((rows[0] as { confianza: string }).confianza).toBe('alta'); // la primera gana
+  });
+```
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -293,6 +306,11 @@ git add src/db/schema.sql src/db/repositories/shadow-verdicts.ts src/db/reposito
 git commit -m "feat: shadow_verdicts persiste technical_read/model/tokens (SP8)"
 ```
 
+> **Estado intermedio esperado (L1):** tras este commit, `ShadowVerdictRow` tiene 3 campos
+> requeridos que el `run-decision-maker.ts` de SP7 aún no provee → `npm run typecheck` **fallará**
+> hasta Task 4 (que reemplaza ese archivo). `npm test` (Vitest) sigue verde porque no hace
+> typecheck de proyecto. No corras `npm run typecheck` como gate entre Task 2 y Task 4.
+
 ---
 
 ### Task 3: `analyzeTechnical` (delegación al subagente)
@@ -339,7 +357,8 @@ describe('analyzeTechnical', () => {
     expect(out.tokens).toBe(222);
     expect(s.task).toHaveBeenCalledWith(
       expect.stringContaining('BTC/USDT'),
-      expect.objectContaining({ agent: 'technical-analyst', model: 'anthropic/claude-haiku-4-5' }),
+      // result: debe ir siempre — fuerza la salida estructurada Valibot (no degradar el contrato).
+      expect.objectContaining({ agent: 'technical-analyst', model: 'anthropic/claude-haiku-4-5', result: expect.anything() }),
     );
   });
 
@@ -728,6 +747,16 @@ export default defineWorkflow({
   },
 });
 ```
+
+> **Contingencia M1 (verificar en el smoke, Step 6):** la doc de Flue muestra `task({ agent })`
+> sobre la sesión **default**; usar una sesión **nombrada** (`harness.session('technical')`) para
+> delegar a un subagente es coherente (los subagentes son del *agente*, no de la sesión) pero no
+> está demostrado con un ejemplo. Si el smoke falla con "subagente no encontrado" al llamar
+> `techSession.task({ agent: 'technical-analyst' })`, la corrección es delegar desde la sesión
+> **default** (`session`) en vez de `techSession` (`analyze: (args) => analyzeTechnical(session as
+> unknown as TaskSession, ...)`), aceptando que el transcript del decision-maker reciba la ida/vuelta
+> del analista como efecto colateral menor. Preferencia: sesión dedicada (R2); fallback documentado:
+> sesión default.
 
 - [ ] **Step 4: Typecheck + suite completa**
 
