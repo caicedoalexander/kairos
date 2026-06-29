@@ -78,7 +78,9 @@ trabajo LLM vive en el proceso del servidor Flue. SP8 no cambia la cola ni el wo
    modelUsed, tokens }` que llama `session.task('<prompt>', { agent: 'technical-analyst', result:
    TechnicalReadSchema })`. Extrae `model`/`usage` igual que `evaluate-with-failover.ts`
    (reutiliza/clona `extractTokens`). **Sin failover propio en SP8** (degradación lo cubre; el
-   failover fino del subagente es de SP10 si pesa).
+   failover fino del subagente es de SP10 si pesa). Define su propia interfaz mínima de sesión
+   `TaskSession` con `.task(text, { agent, result, model })` (la actual `SkillSession` solo expone
+   `.skill` — ver R4 abajo).
 
 ### Componentes modificados
 
@@ -86,23 +88,31 @@ trabajo LLM vive en el proceso del servidor Flue. SP8 no cambia la cola ni el wo
    [technicalAnalyst]`, donde `technicalAnalyst = defineAgentProfile({ name: 'technical-analyst',
    description, instructions, skills: [technicalRead], model: TECHNICAL_MODEL, thinkingLevel:
    'medium', tools: [] })`. `TECHNICAL_MODEL = process.env.TECHNICAL_MODEL ??
-   'anthropic/claude-haiku-4-5'`. El `run()` cablea `deps.analyze` (adaptando la `session`).
+   'anthropic/claude-haiku-4-5'`. El `run()` cablea `deps.analyze` sobre una **sesión dedicada**
+   `harness.session('technical')` (R2) y `deps.evaluate` sobre la sesión del decision-maker, para no
+   contaminar el transcript del padre con la ida/vuelta del analista.
 5. **`src/lib/reasoning/run-decision-maker.ts`** — `DecisionMakerDeps` gana
    `analyze: (args: ShadowEvalArgs) => Promise<{ read: TechnicalRead; modelUsed: string; tokens:
    number | null }>`. La orquestación llama `analyze` con **degradación** (try/catch local: fallo →
-   `technicalRead=null` + `deps.audit('technical_read_failed')`, continúa). Pasa `technicalRead` a
-   `evaluate` (dentro de `args`) y a `persist`.
+   `technicalRead=null` + `deps.audit('technical_read_failed', { error, errorType })` (R1b),
+   continúa). Pasa `technicalRead` (y `technicalModel`/`technicalTokens`) a `evaluate` (dentro de
+   `args`) y a `persist`. **Si `evaluate` falla tras un `analyze` exitoso (R3):** el payload de
+   `shadow_failed` incluye `technicalRead`/`technical_tokens`/`technical_model` para no perder el
+   read ni el costo Haiku ya gastado.
 6. **`src/skills/decision-protocol/SKILL.md`** — documenta que `args` ahora puede traer
    `technical_read` (de un analista técnico que ya leyó el snapshot) y cómo pesarlo: es **un insumo
    más**, no un oráculo; ante `technical_read` ausente (degradado) razona sobre el snapshot directo
-   como hasta SP7.
+   como hasta SP7. **Instrucción explícita (R1): el `technical_read` ya viene en `args`; NO delegues
+   ni invoques ningún subagente — solo sintetiza el veredicto.**
 7. **`src/db/schema.sql`** — `shadow_verdicts` gana `technical_read jsonb`, `technical_model text`,
    `technical_tokens integer` (todos nullable; `null` = analista degradado en ese eval).
 8. **`src/db/repositories/shadow-verdicts.ts`** — `ShadowVerdictRow` y el INSERT se extienden con
    los tres campos nuevos. `getShadowVerdict` los devuelve.
 9. **`src/lib/reasoning/run-decision-maker.ts`** (`ShadowEvalArgs`) — gana `technicalRead?:
-   TechnicalRead | null` para que `evaluate` lo reciba dentro de `args` (el `decision-protocol`
-   lee `args.technical_read`).
+   TechnicalRead | null` para que `evaluate` lo reciba dentro de `args`. **Mapeo de clave (R2b):**
+   `evaluateWithFailover` pasa `args` tal cual a `session.skill`, así que el adaptador debe
+   serializar `technicalRead` → `args.technical_read` (snake_case) antes de llamar al skill, o el
+   `decision-protocol` no lo verá.
 10. **`src/db/migrate.test.ts`** — sin cambios de tablas (sigue `shadow_verdicts`); si hay un test
     de columnas esperadas, se extiende con los tres campos nuevos.
 
@@ -180,6 +190,36 @@ naturalmente a `decisions`.
 - `npm test` (sesión inyectada) y `npm run typecheck` en verde; cobertura ≥ 80%.
 - Smoke vivo: `flue run decision-maker` produce un `technical_read` Valibot válido del modelo real y
   un veredicto que lo integra.
+
+## Hallazgos de revisión de diseño (resueltos en este spec)
+
+Revisado por `kairos-design-reviewer` contra la doc real de Flue (`subagents.md`, `agent-api.md`),
+SP7 y ARCHITECTURE.md. Veredicto: aprobado, sin CRITICAL/HIGH. Resoluciones incorporadas:
+
+- **R1 — auto-delegación del padre (M1):** registrar el subagente en `subagents:[]` lo expone al
+  modelo padre (Sonnet), que *podría* invocar `task(technical-analyst)` por su cuenta durante el
+  turno de `decision-protocol` (`subagents.md:33,37`), duplicando el costo Haiku y erosionando "el
+  código dirige la delegación". Mitigación: el `decision-protocol/SKILL.md` instruye explícitamente
+  no delegar (el read ya viene en `args`). El subagente sigue registrado porque `session.task`
+  con nombre lo exige.
+- **R1b — tipo de error en el audit (L1):** el payload de `technical_read_failed` captura `error` y
+  `errorType` para que el A/B distinga "el modelo no produjo read" (`ResultUnavailableError`) de
+  "infra/proveedor caído".
+- **R2 — sesión dedicada para el analista (M2):** `analyze` corre sobre `harness.session('technical')`,
+  no sobre la sesión del decision-maker, para mantener el transcript del padre limpio y determinista.
+  El read limpio viaja al `decision-protocol` por `args.technical_read`, no por transcript.
+- **R2b — mapeo snake_case (L2):** el adaptador serializa `technicalRead` → `args.technical_read`
+  antes de `session.skill`, porque `evaluateWithFailover` pasa `args` sin transformar.
+- **R3 — read perdido en `shadow_failed` (M3):** si `analyze` tuvo éxito pero `evaluate` falla, el
+  payload de `shadow_failed` incluye `technicalRead`/`technical_tokens`/`technical_model`, para no
+  perder el read computado ni el costo Haiku ya gastado.
+- **R4 — interfaz de sesión con `.task` (L4):** la actual `SkillSession` (`evaluate-with-failover.ts`)
+  solo expone `.skill`; `analyze-technical.ts` define su propia `TaskSession` con `.task(text,
+  { agent, result, model })`. El cast en `decision-maker.ts` se ajusta para exponer ambas
+  capacidades.
+- **R5 — persistencia en `shadow_verdicts` vs ARCHITECTURE §253 (L3):** desviación justificada y
+  coherente con SP7 (en sombra el veredicto LLM y su read viven en `shadow_verdicts` para A/B;
+  migran a `decisions` cuando el LLM ejecute en SP10).
 
 ## Fuera de alcance de SP8 (van en SPs posteriores)
 
