@@ -3,6 +3,7 @@ import type { Handler } from 'hono';
 import { appendAuditLog } from '../db/repositories/audit-log.ts';
 import { parseSlashCommand } from '../lib/control/parse-control.ts';
 import { dispatchControl, type DispatchDeps } from '../lib/control/dispatch-control.ts';
+import type { ControlIntent } from '../lib/control/control-intent-schema.ts';
 import { getOpenPositions } from '../db/repositories/positions.ts';
 import { setPaused } from '../db/repositories/bot-state.ts';
 import { getMode } from '../lib/mode.ts';
@@ -40,7 +41,7 @@ export function extractMessageText(body: unknown): string | null {
 }
 
 interface ControlRouteDeps {
-  dispatch: (intent: { command: 'estado' | 'pausa' | 'reanuda' | 'unknown' }, deps: DispatchDeps) => Promise<string>;
+  dispatch: (intent: ControlIntent, deps: DispatchDeps) => Promise<string>;
   reply: (text: string, to: string) => Promise<unknown>;
   invoke: (text: string, sender: string) => Promise<unknown>;
 }

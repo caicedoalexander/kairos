@@ -1,7 +1,7 @@
 import { defineAgent, defineWorkflow } from '@flue/runtime';
 import * as v from 'valibot';
 import controlProtocol from '../skills/control-protocol/SKILL.md' with { type: 'skill' };
-import { ControlIntentSchema, type ControlIntent } from '../lib/control/control-intent-schema.ts';
+import { ControlResultSchema, type ControlResult } from '../lib/control/control-intent-schema.ts';
 import { dispatchControl } from '../lib/control/dispatch-control.ts';
 import { getOpenPositions } from '../db/repositories/positions.ts';
 import { setPaused } from '../db/repositories/bot-state.ts';
@@ -21,20 +21,24 @@ const controlAgent = defineAgent(() => ({
 
 // Interfaz mínima de sesión para session.skill con result.
 interface SkillSession {
-  skill(name: string, opts: { args: Record<string, unknown>; result: unknown }): Promise<{ data: ControlIntent }>;
+  skill(name: string, opts: { args: Record<string, unknown>; result: unknown }): Promise<{ data: ControlResult }>;
 }
 
 export default defineWorkflow({
   agent: controlAgent,
   input: v.object({ text: v.string(), sender: v.string() }),
-  output: v.object({ command: v.picklist(['estado', 'pausa', 'reanuda', 'unknown']) }),
+  // FIX H1: el output del workflow refleja ControlResultSchema (sin 'cierra') — el LLM nunca puede
+  // emitir un cierre; ese comando solo llega por el parser slash determinista.
+  output: v.object({ command: v.picklist(['estado', 'pausa', 'reanuda', 'modo', 'unknown']) }),
 
   async run({ harness, input }) {
     const session = (await harness.session()) as unknown as SkillSession;
-    // L3: si el skill no produce un ControlIntent válido, degrada a 'unknown' (responde ayuda).
-    let intent: ControlIntent = { command: 'unknown' };
+    // L3: si el skill no produce un ControlResult válido, degrada a 'unknown' (responde ayuda).
+    let intent: ControlResult = { command: 'unknown' };
     try {
-      const res = await session.skill('control-protocol', { args: { text: input.text }, result: ControlIntentSchema });
+      // FIX H1: result usa ControlResultSchema (estricto, sin 'cierra') — el LLM ve solo el picklist
+      // seguro. El único productor de {command:'cierra'} es el parser slash determinista.
+      const res = await session.skill('control-protocol', { args: { text: input.text }, result: ControlResultSchema });
       intent = res.data;
     } catch (err: unknown) {
       try {
