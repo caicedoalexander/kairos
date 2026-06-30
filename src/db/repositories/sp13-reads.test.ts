@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { query } from '../pool.ts';
 import { pool } from '../pool.ts';
 import { ulid } from 'ulidx';
@@ -13,9 +13,12 @@ const TEST_STRATEGY_ID = 'sp13-reads-test-strategy';
 async function seedStrategy(): Promise<string> {
   // FIX H-1 (plan-review): kairos.strategies NO tiene columna `name`; `timeframe` es NOT NULL.
   // enabled=false: no contamina getEnabledStrategies (que parseará trigger_config).
+  // ON CONFLICT DO UPDATE SET enabled=false: garantiza que una fila pre-existente con enabled=true
+  // (de una ejecución anterior a este fix) quede deshabilitada, evitando que getEnabledStrategies
+  // intente parsear trigger_config vacío y falle (fail-loud, sin try/catch en producción).
   await query(`INSERT INTO kairos.strategies (id, enabled, timeframe, trigger_config, risk_params)
                VALUES ($1, false, '15m', '{}'::jsonb, '{}'::jsonb)
-               ON CONFLICT (id) DO NOTHING`, [TEST_STRATEGY_ID]);
+               ON CONFLICT (id) DO UPDATE SET enabled = false`, [TEST_STRATEGY_ID]);
   return TEST_STRATEGY_ID;
 }
 async function seedSignal(strategyId: string, symbol: string): Promise<string> {
@@ -30,6 +33,12 @@ async function seedDecision(signalId: string): Promise<string> {
 }
 
 describe('SP13 reads (integración)', () => {
+  // Siembra la estrategia de prueba en beforeAll para garantizar que la fila exista con
+  // enabled=false ANTES de que cualquier test corra — incluyendo tests de otros archivos
+  // que corren en paralelo (strategies.test.ts) y llaman a getEnabledStrategies(), que
+  // lanzaría si encuentra una fila con trigger_config vacío y enabled=true (fail-loud).
+  beforeAll(async () => { await seedStrategy(); });
+
   beforeEach(async () => {
     // Aísla: limpia SOLO los datos de esta estrategia de prueba (scoped por strategy_id)
     // para no interferir con otros test files que corren en paralelo y usan mode='testnet'.

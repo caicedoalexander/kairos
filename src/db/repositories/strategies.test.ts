@@ -4,7 +4,15 @@ import { pool, query } from '../pool.ts';
 import { seedStrategies } from '../seed-strategies.ts';
 import { getStrategy, getEnabledStrategies } from './strategies.ts';
 
-beforeAll(async () => { await migrate(); await seedStrategies(); });
+beforeAll(async () => {
+  await migrate();
+  await seedStrategies();
+  // Deshabilita cualquier estrategia de test que haya acumulado trigger_config vacío en la DB
+  // compartida (artefactos de ejecuciones de test anteriores a SP13 que usaban ULIDs y
+  // enabled=true). getEnabledStrategies es fail-loud: lanzaría al parsear configs inválidos.
+  // Esta limpieza es idempotente y no afecta pullback-alcista (que tiene config completo).
+  await query(`UPDATE kairos.strategies SET enabled=false WHERE id != 'pullback-alcista' AND trigger_config = '{}'::jsonb AND enabled=true`);
+});
 afterAll(async () => { await pool.end(); });
 
 describe('strategies repo', () => {
