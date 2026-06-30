@@ -204,6 +204,21 @@ export async function getProtectedOpenPositions(mode: TradingMode, exec: Executo
   return rows.map(mapReconcilePosition);
 }
 
+// Trailing: actualiza el SL persistido de una posición.
+export async function setPositionSl(id: string, sl: number, exec: Executor = query): Promise<void> {
+  await exec(`UPDATE kairos.positions SET sl = $2 WHERE id = $1`, [id, sl]);
+}
+
+// Trailing (FIX M1): re-check por id dentro del lock, incluye `protected`. null si no está open.
+export async function getOpenPositionById(id: string, exec: Executor = query): Promise<(ReconcilePosition & { protected: boolean }) | null> {
+  const rows = await exec<ReconcilePositionRow & { protected: boolean }>(
+    `SELECT id, symbol, strategy_id, decision_id, entry, size, sl, tp, entry_fee, protected
+       FROM kairos.positions WHERE id = $1 AND status = 'open'`,
+    [id],
+  );
+  return rows[0] ? { ...mapReconcilePosition(rows[0]), protected: rows[0].protected } : null;
+}
+
 // SP14: posición abierta por símbolo+modo SIN los filtros del monitor (getOpenPositions exige sl/tp NOT
 // NULL + trigger-TF, lo que ocultaría posiciones cerrables). Para /cierra. Si hay >1, la más reciente.
 export async function getOpenPositionBySymbol(symbol: string, mode: TradingMode, exec: Executor = query): Promise<ReconcilePosition | null> {
