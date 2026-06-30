@@ -4,6 +4,7 @@ import { insertFill } from '../../db/repositories/fills.ts';
 import { openPosition, setPositionProtected, closeOpenPosition, hasOpenPositionForSetup } from '../../db/repositories/positions.ts';
 import { appendAuditLog } from '../../db/repositories/audit-log.ts';
 import { withSetupLock } from './setup-lock.ts';
+import { isSetupOccupied } from './setup-occupied.ts';
 import { isOpenSetupViolation } from './execute-order.ts';
 import { meetsLegMin } from './real-order/precision.ts';
 import { DEFAULT_SIM_PARAMS } from './limits.ts';
@@ -42,7 +43,7 @@ export async function executeOrderReal(p: ExecuteOrderRealParams, deps: RealOrde
   const size = p.riskResult.adjustedSize;
   if (p.riskResult.result !== 'allow' || size === null) throw new Error('executeOrderReal requiere riskResult allow con adjustedSize');
   const withLock = deps.withLock ?? withSetupLock;
-  const hasOpen = deps.hasOpenForSetup ?? hasOpenPositionForSetup;
+  const hasOpen = deps.hasOpenForSetup ?? isSetupOccupied;
 
   const locked = await withLock(p.strategyId, p.symbol, p.mode, async (): Promise<ExecutionResult> => {
     // Re-check dentro del lock (N5): el pre-check de evaluateCandidate corre fuera del lock.

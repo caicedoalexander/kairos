@@ -14,7 +14,7 @@ import { getMode } from '../lib/mode.ts';
 import type { TradingMode } from '../lib/mode.ts';
 import { sendWhatsApp } from '../notify/whatsapp.ts';
 import { appendAuditLog } from '../db/repositories/audit-log.ts';
-import { hasOpenPositionForSetup } from '../db/repositories/positions.ts';
+import { isSetupOccupied } from '../lib/execution/setup-occupied.ts';
 import { notifyBestEffort } from '../notify/best-effort.ts';
 import { getPaused } from '../db/repositories/bot-state.ts';
 import type { ExecutionResult, Verdict, RiskResult } from '../lib/execution/types.ts';
@@ -63,7 +63,7 @@ export async function evaluateCandidate(signalId: string, deps: Partial<Evaluate
   if (!strategy) return { kind: 'not_found' };
 
   // Dedup per-setup (pre-check barato; el índice parcial es la red ante carreras).
-  if (await hasOpenPositionForSetup(signal.strategyId, signal.symbol, mode)) {
+  if (await isSetupOccupied(signal.strategyId, signal.symbol, mode)) {
     try {
       await appendAuditLog({ eventType: 'entry_deduped', actor: 'evaluate-candidate',
         payload: { signalId, strategyId: signal.strategyId, symbol: signal.symbol, mode, via: 'pre-check' } });
