@@ -141,7 +141,7 @@ Progreso por sprints (SP):
   de `ohlcv_candles`) queda **owner-gated, pendiente**. Plan en
   `docs/superpowers/plans/2026-06-29-sp13-reconciler-monitor-ccxt.md`.
   **🎉 FASE 3 COMPLETA EN CÓDIGO.** El loop testnet continuo desatendido puede habilitarse tras
-  el smoke vigilado. Queda: SP14 (`/cierra`, `/modo`), trailing (sprint propio), Fase 4 (live).
+  el smoke vigilado. Queda: SP14 ✅ hecho, trailing (sprint propio), Fase 4 (live).
 
 > Pendientes antes del **loop testnet continuo**: **smoke vigilado owner-gated de SP13** (valida
 > llamadas ccxt reales: `fetchOrder` por clientOrderId, fills, P&L, OCO re-protect) **Y smoke de

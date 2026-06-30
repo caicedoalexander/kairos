@@ -48,6 +48,12 @@
   del exchange (cancelado por leg vía `cancelOrder`); (b) la venta market IOC ejecuta; (c) la posición
   queda `status='closed'` en DB con P&L real calculado desde fills; (d) si se repite el comando → "ya
   estaba cerrada" (idempotencia). Hasta correr este smoke, `/cierra` en testnet no se usa en producción.
+  **Nota antes de live — riesgo de over-sell (deuda declarada):** `/cierra` (y `emergencyClose`) venden
+  `pos.size` por market; en una cuenta con balance base LIBRE compartido (live), la venta podría tocar
+  saldo ajeno a la posición (p.ej. saldo libre del mismo activo u otra posición larga). En testnet
+  (cuenta dedicada) el rechazo `InsufficientFunds` es el backstop suficiente. Antes de live: usar
+  cuenta/sub-cuenta dedicada por estrategia, o derivar la qty a vender del balance reservado por el OCO
+  en vez de `pos.size` crudo.
 
 ### 1.3 Push a `origin`
 
