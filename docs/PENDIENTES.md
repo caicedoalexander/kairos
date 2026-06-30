@@ -36,8 +36,12 @@
 - **SP13 reconciler/monitor ccxt** (bloqueante para loop continuo): con `KAIROS_MODE=testnet` y el worker
   vivo, verificar contra Binance testnet real: (H3) `fetchOrder(undefined, symbol, { clientOrderId })` recupera
   la entrada por signalId; reconciler re-protege una posición `protected=false`; monitor detecta fill del
-  OCO y cierra con P&L real; `ohlcv_candles.max(open_time)` avanza sin intervención. Sin este smoke,
-  el loop testnet continuo desatendido **no debe habilitarse**.
+  OCO y cierra con P&L real; `ohlcv_candles.max(open_time)` avanza sin intervención.
+  **[I-1] Verificar la moneda del fee de compra en testnet:** si el fee se cobra en base (BTC), el
+  re-protect del reconciler usa qty bruta (`state.filled`) y podría fallar por saldo insuficiente,
+  dejando la posición `protected=false` → corregir restando `feeBase` (igual que el executor real en
+  `execute-order-real.ts:78`) ANTES de habilitar el loop continuo / antes de live.
+  Sin este smoke, el loop testnet continuo desatendido **no debe habilitarse**.
 
 ### 1.3 Push a `origin`
 

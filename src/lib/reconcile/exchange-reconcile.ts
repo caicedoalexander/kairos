@@ -34,11 +34,23 @@ async function reconcileOneEntry(deps: ReconcileDepsReal, e: UnresolvedEntry): P
   const state = await fetchEntryState(deps.client, e.symbol, e.idempotencyKey);
   if (!state.found || state.filled <= 0) {
     await updateOrderStatus(e.id, 'canceled');
-    await appendAuditLog({ eventType: 'reconcile_entry_void', actor: 'reconciler', payload: { orderId: e.id, idem: e.idempotencyKey } });
+    await safeAudit('reconcile_entry_void', { orderId: e.id, idem: e.idempotencyKey });
     return true;
   }
   const verdict = await getDecisionVerdict(e.decisionId);
   if (!verdict) throw new Error(`decisión ${e.decisionId} sin verdict`);
+  /*
+   * RIESGO I-1 (declarado, pendiente de verificación en el smoke owner-gated de SP13):
+   * Se usa qty BRUTA del exchange (state.filled) y entry_fee=0, a diferencia del executor real
+   * (execute-order-real.ts:78) que usa qty NETA (filledQty - feeBase). En Binance spot, el fee
+   * de compra suele cobrarse en el activo base (p.ej. BTC), por lo que el balance real disponible
+   * puede ser menor a la qty bruta. Si el fee se paga en base, el placeOco que sigue — y el
+   * reprotectOrFlatten de A.2 que usa p.size — podrían fallar por saldo insuficiente, dejando
+   * la posición protected=false hasta reconciliación/intervención manual.
+   * Antes de habilitar el loop continuo y antes de live, el smoke owner-gated debe verificar la
+   * moneda del fee de compra en testnet; si es base, corregir restando feeBase (igual que el
+   * executor real) ANTES de activar el loop.
+   */
   // Ancla de idempotencia: la fila de posición (índice parcial per-setup). Abre con protected=false.
   const positionId = await openPosition({ symbol: e.symbol, entry: state.average, size: state.filled, sl: verdict.sl,
     tp: verdict.tp, strategyId: e.strategyId, mode: deps.mode, decisionId: e.decisionId, protected: false });
@@ -90,7 +102,7 @@ async function closePositionFromExchange(deps: ReconcileDepsReal, p: ReconcilePo
   const realized = (exit.exitPrice - p.entry) * p.size - exit.exitFee - p.entryFee;
   const closed = await closeOpenPosition(p.id, realized, new Date());
   if (closed && p.decisionId) await closeBracketLegs(p.decisionId, leg.purpose);
-  await appendAuditLog({ eventType: 'reconcile_position_closed', actor: 'reconciler', payload: { positionId: p.id, realized } });
+  if (closed) await appendAuditLog({ eventType: 'reconcile_position_closed', actor: 'reconciler', payload: { positionId: p.id, realized } });
   return closed;
 }
 

@@ -68,7 +68,7 @@ export async function evaluateCandidate(signalId: string, deps: Partial<Evaluate
       await appendAuditLog({ eventType: 'entry_deduped', actor: 'evaluate-candidate',
         payload: { signalId, strategyId: signal.strategyId, symbol: signal.symbol, mode, via: 'pre-check' } });
     } catch { /* telemetría best-effort: el skip es inocuo aunque falle el audit */ }
-    return { kind: 'skipped', reason: 'dedup: posición abierta para el setup' };
+    return { kind: 'skipped', reason: 'dedup: setup ocupado (posición abierta o entrada sin resolver)' };
   }
 
   const verdict = buildDeterministicVerdict(signal, strategy);
