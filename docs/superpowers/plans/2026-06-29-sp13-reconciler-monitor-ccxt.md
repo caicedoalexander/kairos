@@ -163,7 +163,7 @@ git commit -m "feat: clientOrderId determinista en placeEntry (SP13 FIX H3) + no
 **Interfaces:**
 - Produces:
   - `OrderStateClient` (subset de ccxt: `fetchOrder(id: string | undefined, symbol: string, params?: Record<string, unknown>): Promise<RawOrderState>`, `fetchOrderTrades(id: string, symbol: string): Promise<RawTrade[]>`).
-  - `type EntryState = { found: false } | { found: true; status: string; filled: number; average: number }`.
+  - `type EntryState = { found: false } | { found: true; status: string; filled: number; average: number; exchangeOrderId: string }` (FIX M-2: incluye el id real del exchange para `setOrderExchangeId`).
   - `fetchEntryState(client: OrderStateClient, symbol: string, clientOrderId: string): Promise<EntryState>`.
   - `fetchLegState(client: OrderStateClient, symbol: string, legId: string): Promise<{ status: string; filled: number }>`.
   - `interface ExitFromTrades { exitPrice: number; exitFee: number; qty: number }`.
@@ -188,9 +188,9 @@ function client(over: Partial<OrderStateClient>): OrderStateClient {
 }
 
 describe('fetchEntryState', () => {
-  it('orden llenada → found con status/filled/average', async () => {
-    const c = client({ fetchOrder: async () => ({ status: 'closed', filled: 0.5, average: 100 }) });
-    expect(await fetchEntryState(c, 'BTC/USDT', 'sig-1')).toEqual({ found: true, status: 'closed', filled: 0.5, average: 100 });
+  it('orden llenada → found con status/filled/average/exchangeOrderId', async () => {
+    const c = client({ fetchOrder: async () => ({ id: '12345678', status: 'closed', filled: 0.5, average: 100 }) });
+    expect(await fetchEntryState(c, 'BTC/USDT', 'sig-1')).toEqual({ found: true, status: 'closed', filled: 0.5, average: 100, exchangeOrderId: '12345678' });
   });
 
   it('OrderNotFound → found:false (la entrada nunca llegó al exchange)', async () => {
@@ -241,7 +241,7 @@ Expected: FAIL ("Cannot find module './order-state.ts'").
 ```typescript
 import ccxt from 'ccxt';
 
-interface RawOrderState { status?: string; filled?: number; average?: number }
+interface RawOrderState { id?: string; status?: string; filled?: number; average?: number }
 interface RawTrade { price?: number; amount?: number; fee?: { cost?: number; currency?: string }; fees?: Array<{ cost?: number; currency?: string }> }
 
 export interface OrderStateClient {
@@ -249,14 +249,16 @@ export interface OrderStateClient {
   fetchOrderTrades(id: string, symbol: string): Promise<RawTrade[]>;
 }
 
-export type EntryState = { found: false } | { found: true; status: string; filled: number; average: number };
+// FIX M-2: `exchangeOrderId` lleva el id real que asigna Binance (para persistir en orders.exchange_order_id),
+// NO el clientOrderId con el que se consultó.
+export type EntryState = { found: false } | { found: true; status: string; filled: number; average: number; exchangeOrderId: string };
 
 // Recupera el estado de una entrada por clientOrderId (origClientOrderId en binance). OrderNotFound
 // significa que la entrada nunca llegó al exchange → found:false. NetworkError se propaga (retry del caller).
 export async function fetchEntryState(client: OrderStateClient, symbol: string, clientOrderId: string): Promise<EntryState> {
   try {
     const o = await client.fetchOrder(undefined, symbol, { clientOrderId });
-    return { found: true, status: o.status ?? 'unknown', filled: o.filled ?? 0, average: o.average ?? 0 };
+    return { found: true, status: o.status ?? 'unknown', filled: o.filled ?? 0, average: o.average ?? 0, exchangeOrderId: String(o.id ?? '') };
   } catch (err) {
     if (err instanceof ccxt.OrderNotFound) return { found: false };
     throw err;
@@ -337,8 +339,9 @@ import { findUnprotectedPositions, getProtectedOpenPositions } from './positions
 // Helpers mínimos para sembrar el grafo strategy→signal→decision→order/position.
 async function seedStrategy(): Promise<string> {
   const id = ulid();
-  await query(`INSERT INTO kairos.strategies (id, name, enabled, trigger_config, risk_params)
-               VALUES ($1, 'sp13', true, '{}'::jsonb, '{}'::jsonb)`, [id]);
+  // FIX H-1 (plan-review): kairos.strategies NO tiene columna `name`; `timeframe` es NOT NULL.
+  await query(`INSERT INTO kairos.strategies (id, enabled, timeframe, trigger_config, risk_params)
+               VALUES ($1, true, '15m', '{}'::jsonb, '{}'::jsonb)`, [id]);
   return id;
 }
 async function seedSignal(strategyId: string, symbol: string): Promise<string> {
@@ -371,18 +374,30 @@ describe('SP13 reads (integración)', () => {
     expect(fills[0]).toMatchObject({ price: 100, qty: 0.5, fee: 0.05 });
   });
 
-  it('findUnresolvedEntries incluye una entrada vieja sin posición y excluye fresca/con-posición', async () => {
-    const s = await seedStrategy(); const sig = await seedSignal(s, 'BTC/USDT'); const d = await seedDecision(sig);
+  it('findUnresolvedEntries: incluye vieja-sin-posición; excluye fresca (H1) y vieja-con-posición (idempotencia)', async () => {
+    const s = await seedStrategy();
+    // (a) vieja sin posición → DEBE aparecer.
+    const sigA = await seedSignal(s, 'BTC/USDT'); const dA = await seedDecision(sigA);
     const oldId = ulid();
     await query(`INSERT INTO kairos.orders (id, idempotency_key, decision_id, side, size, type, purpose, status, mode, created_at)
-                 VALUES ($1, $2, $3, 'buy', 1, 'limit', 'entry', 'pending_execution', 'testnet', now() - interval '10 minutes')`, [oldId, sig, d]);
-    const freshSig = await seedSignal(s, 'ETH/USDT'); const freshD = await seedDecision(freshSig);
+                 VALUES ($1, $2, $3, 'buy', 1, 'limit', 'entry', 'pending_execution', 'testnet', now() - interval '10 minutes')`, [oldId, sigA, dA]);
+    // (b) fresca (dentro de la ventana del lock) → NO debe aparecer (FIX H1).
+    const sigB = await seedSignal(s, 'ETH/USDT'); const dB = await seedDecision(sigB);
+    const freshOrderId = ulid();
     await query(`INSERT INTO kairos.orders (id, idempotency_key, decision_id, side, size, type, purpose, status, mode, created_at)
-                 VALUES ($1, $2, $3, 'buy', 1, 'limit', 'entry', 'pending', 'testnet', now())`, [ulid(), freshSig, freshD]);
-    const found = await findUnresolvedEntries('testnet');
-    expect(found.map((e) => e.id)).toContain(oldId);
-    expect(found.map((e) => e.symbol)).toContain('BTC/USDT');
-    expect(found.map((e) => e.id)).not.toContain(freshSig); // la fresca queda fuera por el filtro de frescura
+                 VALUES ($1, $2, $3, 'buy', 1, 'limit', 'entry', 'pending', 'testnet', now())`, [freshOrderId, sigB, dB]);
+    // (c) vieja PERO con posición ya abierta para su decisión → NO debe aparecer (idempotencia A.1).
+    const sigC = await seedSignal(s, 'SOL/USDT'); const dC = await seedDecision(sigC);
+    const withPosId = ulid();
+    await query(`INSERT INTO kairos.orders (id, idempotency_key, decision_id, side, size, type, purpose, status, mode, created_at)
+                 VALUES ($1, $2, $3, 'buy', 1, 'limit', 'entry', 'pending_execution', 'testnet', now() - interval '10 minutes')`, [withPosId, sigC, dC]);
+    await query(`INSERT INTO kairos.positions (id, symbol, side, entry, size, sl, tp, status, strategy_id, mode, decision_id, protected)
+                 VALUES ($1, 'SOL/USDT', 'long', 1, 1, 0.9, 1.1, 'open', $2, 'testnet', $3, false)`, [ulid(), s, dC]);
+
+    const ids = (await findUnresolvedEntries('testnet')).map((e) => e.id);
+    expect(ids).toContain(oldId);             // (a) sí
+    expect(ids).not.toContain(freshOrderId);  // (b) no — filtro de frescura (compara IDs de ORDEN, no de señal)
+    expect(ids).not.toContain(withPosId);     // (c) no — ya tiene posición
   });
 
   it('hasUnresolvedEntryForSetup es true para una pending FRESCA (sin filtro de frescura — gate)', async () => {
@@ -689,7 +704,7 @@ vi.mock('../../db/repositories/decisions.ts', () => ({ getDecisionVerdict: vi.fn
 vi.mock('../../db/repositories/audit-log.ts', () => ({ appendAuditLog: vi.fn() }));
 vi.mock('../execution/real-order/order-state.ts', () => ({ fetchEntryState: vi.fn(), fetchExitFromTrades: vi.fn() }));
 
-import { findUnresolvedEntries, updateOrderStatus } from '../../db/repositories/orders.ts';
+import { findUnresolvedEntries, updateOrderStatus, setOrderExchangeId } from '../../db/repositories/orders.ts';
 import { openPosition, setPositionProtected } from '../../db/repositories/positions.ts';
 import { insertFill } from '../../db/repositories/fills.ts';
 import { getDecisionVerdict } from '../../db/repositories/decisions.ts';
@@ -709,14 +724,15 @@ beforeEach(() => {
 });
 
 describe('reconcileUnresolvedEntries', () => {
-  it('entrada LLENADA → abre posición + fill + re-protege + orden filled', async () => {
+  it('entrada LLENADA → abre posición + fill + exchangeId real + re-protege + orden filled', async () => {
     vi.mocked(findUnresolvedEntries).mockResolvedValue([baseEntry]);
-    vi.mocked(fetchEntryState).mockResolvedValue({ found: true, status: 'closed', filled: 0.5, average: 100 });
+    vi.mocked(fetchEntryState).mockResolvedValue({ found: true, status: 'closed', filled: 0.5, average: 100, exchangeOrderId: 'BIN-1' });
     vi.mocked(openPosition).mockResolvedValue('p1');
     const d = deps();
     const r = await reconcileUnresolvedEntries(d);
     expect(openPosition).toHaveBeenCalledWith(expect.objectContaining({ symbol: 'BTC/USDT', size: 0.5, protected: false }));
     expect(insertFill).toHaveBeenCalled();
+    expect(setOrderExchangeId).toHaveBeenCalledWith('o1', 'BIN-1');   // FIX M-2: id real, no el clientOrderId
     expect(d.placeOco).toHaveBeenCalledWith(d.client, expect.objectContaining({ symbol: 'BTC/USDT', qty: 0.5 }));
     expect(setPositionProtected).toHaveBeenCalledWith('p1', true);
     expect(updateOrderStatus).toHaveBeenCalledWith('o1', 'filled');
@@ -818,7 +834,7 @@ async function reconcileOneEntry(deps: ReconcileDepsReal, e: UnresolvedEntry): P
   const positionId = await openPosition({ symbol: e.symbol, entry: state.average, size: state.filled, sl: verdict.sl,
     tp: verdict.tp, strategyId: e.strategyId, mode: deps.mode, decisionId: e.decisionId, protected: false });
   await insertFill({ orderId: e.id, price: state.average, qty: state.filled, fee: 0 });
-  await setOrderExchangeId(e.id, e.idempotencyKey);
+  await setOrderExchangeId(e.id, state.exchangeOrderId);   // FIX M-2: id real del exchange, no el clientOrderId
   await updateOrderStatus(e.id, 'filled');
   // Re-protege con OCO residente.
   const oco = await deps.placeOco(deps.client, { symbol: e.symbol, qty: state.filled, sl: verdict.sl, tp: verdict.tp });
@@ -1438,15 +1454,21 @@ En `src/worker.ts`, cambia el handler del `monitorWorker` (línea 54) para despa
   let reconcileQueue: Queue | undefined, refreshQueue: Queue | undefined;
   let reconcileWorker: Worker | undefined, refreshWorker: Worker | undefined;
   if (isRealMode(mode)) {
+    // FIX L-2: el spec exige refresh ≤ monitor; si no, el scanner ve velas rancias entre ticks.
+    if (OHLCV_REFRESH_INTERVAL_MS > MONITOR_INTERVAL_MS) {
+      process.stderr.write(`[worker] WARN: OHLCV_REFRESH_INTERVAL_MS (${OHLCV_REFRESH_INTERVAL_MS}) > MONITOR_INTERVAL_MS (${MONITOR_INTERVAL_MS})\n`);
+    }
     const RECONCILE_QUEUE = 'reconcile-tick';
     reconcileWorker = new Worker(RECONCILE_QUEUE, async () => { await runExchangeReconcile(await realDeps()); }, { connection: conn, concurrency: 1 });
     reconcileWorker.on('error', (err) => process.stderr.write(`[reconcile-worker] error: ${err}\n`));
+    reconcileWorker.on('failed', (job, err) => process.stderr.write(`[reconcile-worker] job failed: ${err instanceof Error ? err.message : String(err)}\n`));
     reconcileQueue = new Queue(RECONCILE_QUEUE, { connection: conn });
     await reconcileQueue.upsertJobScheduler('reconcile-tick', { every: RECONCILE_INTERVAL_MS }, { name: 'tick', data: {}, opts: { removeOnComplete: true } });
 
     const REFRESH_QUEUE = 'ohlcv-refresh-tick';
     refreshWorker = new Worker(REFRESH_QUEUE, async () => { await refreshOhlcv(); }, { connection: conn, concurrency: 1 });
     refreshWorker.on('error', (err) => process.stderr.write(`[refresh-worker] error: ${err}\n`));
+    refreshWorker.on('failed', (job, err) => process.stderr.write(`[refresh-worker] job failed: ${err instanceof Error ? err.message : String(err)}\n`));
     refreshQueue = new Queue(REFRESH_QUEUE, { connection: conn });
     await refreshQueue.upsertJobScheduler('ohlcv-refresh-tick', { every: OHLCV_REFRESH_INTERVAL_MS }, { name: 'tick', data: {}, opts: { removeOnComplete: true } });
   }
