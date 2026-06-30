@@ -76,7 +76,10 @@ async function closeReal(symbol: string, deps: ClosePositionDeps): Promise<strin
 
 // Cierre DB común: fill de salida (best-effort) + closeOpenPosition (ancla idempotente) + legs + audit.
 async function recordClose(pos: ReconcilePosition, exitPrice: number, exitFee: number, realized: number, fillOrderId?: string): Promise<void> {
-  if (fillOrderId) await insertFill({ orderId: fillOrderId, price: exitPrice, qty: pos.size, fee: exitFee });
+  if (fillOrderId) {
+    try { await insertFill({ orderId: fillOrderId, price: exitPrice, qty: pos.size, fee: exitFee }); }
+    catch { /* best-effort: el fill es auditoría; el cierre canónico (closeOpenPosition) no debe bloquearse */ }
+  }
   const closed = await closeOpenPosition(pos.id, realized, new Date());
   if (closed && pos.decisionId) await closeBracketLegs(pos.decisionId, 'sl');
   await appendAuditLog({ eventType: 'position_closed_command', actor: 'control', payload: { positionId: pos.id, symbol: pos.symbol, exitPrice, realized } });

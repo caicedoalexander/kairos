@@ -69,6 +69,16 @@ describe('closePositionCommand — testnet', () => {
     expect(closeOpenPosition).not.toHaveBeenCalled();
     expect(reply).toMatch(/reconciliación|reintenta/i);
   });
+
+  it('insertFill lanza → closeOpenPosition se llama igual (fill es best-effort)', async () => {
+    vi.mocked(getOpenPositionBySymbol).mockResolvedValue(pos);
+    vi.mocked(insertFill).mockRejectedValue(new Error('FK inválida'));
+    const d = realDeps();
+    const reply = await closePositionCommand('BTC/USDT', d);
+    // El fill falló pero el cierre canónico no se bloqueó
+    expect(closeOpenPosition).toHaveBeenCalledWith('p1', expect.closeTo(4.89, 6), expect.any(Date));
+    expect(reply).toContain('cerrada');
+  });
 });
 
 describe('closePositionCommand — sim', () => {
