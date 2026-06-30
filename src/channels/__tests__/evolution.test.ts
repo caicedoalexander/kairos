@@ -3,6 +3,8 @@ vi.mock('../../workflows/control-maker.ts', () => ({ default: {} }));
 vi.mock('@flue/runtime', () => ({ invoke: vi.fn(), defineTool: vi.fn((x: unknown) => x) }));
 
 import { describe, test, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
+import * as v from 'valibot';
+import { ControlResultSchema } from '../../lib/control/control-intent-schema.ts';
 import { migrate } from '../../db/migrate.ts';
 import { pool, query } from '../../db/pool.ts';
 import {
@@ -94,6 +96,17 @@ describe('processControlMessage', () => {
     await processControlMessage('¿cómo va?', '123', { dispatch, reply, invoke } as never);
     expect(invoke).toHaveBeenCalled();
     expect(dispatch).not.toHaveBeenCalled();
+  });
+});
+
+describe('control-maker result estricto (FIX H1)', () => {
+  test('el schema que ve el LLM rechaza cierra', () => {
+    expect(() => v.parse(ControlResultSchema, { command: 'cierra' })).toThrow();
+  });
+  test('el schema acepta los comandos válidos del LLM', () => {
+    for (const cmd of ['estado', 'pausa', 'reanuda', 'modo', 'unknown'] as const) {
+      expect(() => v.parse(ControlResultSchema, { command: cmd })).not.toThrow();
+    }
   });
 });
 

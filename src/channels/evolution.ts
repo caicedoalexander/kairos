@@ -4,6 +4,13 @@ import { appendAuditLog } from '../db/repositories/audit-log.ts';
 import { parseSlashCommand } from '../lib/control/parse-control.ts';
 import { dispatchControl, type DispatchDeps } from '../lib/control/dispatch-control.ts';
 import type { ControlIntent } from '../lib/control/control-intent-schema.ts';
+import { closePositionCommand } from '../lib/control/close-position-command.ts';
+import { cancelOco } from '../lib/execution/real-order/cancel-oco.ts';
+import { emergencyClose } from '../lib/execution/real-order/emergency-close.ts';
+import { getAuthenticatedClient } from '../lib/ccxt-client.ts';
+import type { RealClient } from '../lib/execution/execute-order-real.ts';
+import type { OrderStateClient } from '../lib/execution/real-order/order-state.ts';
+import type { CancelOcoClient } from '../lib/execution/real-order/cancel-oco.ts';
 import { getOpenPositions } from '../db/repositories/positions.ts';
 import { setPaused } from '../db/repositories/bot-state.ts';
 import { getMode } from '../lib/mode.ts';
@@ -46,6 +53,23 @@ interface ControlRouteDeps {
   invoke: (text: string, sender: string) => Promise<unknown>;
 }
 
+// Construye el dep de cierre. En modo real arma el cliente ccxt (credenciales en closure); en sim no.
+// Garantía de seguridad: en sim no se construye el cliente autenticado (no hay keys → lanzaría).
+async function closePositionDep(symbol: string): Promise<string> {
+  const mode = getMode();
+  if (mode === 'sim') {
+    return closePositionCommand(symbol, { mode, cancelOco, emergencyClose });
+  }
+  const client = getAuthenticatedClient();
+  await client.loadMarkets();
+  return closePositionCommand(symbol, {
+    mode,
+    client: client as unknown as RealClient & OrderStateClient & CancelOcoClient,
+    cancelOco,
+    emergencyClose,
+  });
+}
+
 const DEFAULT_ROUTE: ControlRouteDeps = {
   dispatch: dispatchControl,
   reply: (text, to) => sendWhatsApp(text, to),
@@ -63,11 +87,11 @@ export async function processControlMessage(
   const slash = parseSlashCommand(text);
   if (slash) {
     // H-1: getOpenPositions exige `mode`; se envuelve con getMode().
-    // closePosition/currentMode: Task 7 reemplazará closePosition con la impl real.
+    // closePositionDep construye el cliente ccxt solo en modo real (credenciales en closure).
     const replyText = await route.dispatch(slash, {
       getOpenPositions: () => getOpenPositions(getMode()),
       setPaused,
-      closePosition: async () => 'Para cerrar una posición usa /cierra <símbolo>.',
+      closePosition: closePositionDep,
       currentMode: getMode(),
     });
     await route.reply(replyText, sender);
