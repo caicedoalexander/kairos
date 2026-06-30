@@ -29,6 +29,20 @@ export interface TrailingDeps {
   withLock?: typeof withSetupLock;
 }
 
+type PlaceFn = (client: RealClient, a: { symbol: string; qty: number; sl: number; tp: number }) => Promise<OcoResult>;
+
+// Fallback: intenta restaurar el OCO al SL VIEJO. En doble-fallo → baja protected (reconciler A.2).
+async function attemptFallback(place: PlaceFn, client: RealClient, pos: ReconcilePosition, legs: BracketLeg[]): Promise<void> {
+  try {
+    const back = await place(client, { symbol: pos.symbol, qty: pos.size, sl: pos.sl, tp: pos.tp });
+    await updateLegsInPlace(legs, back);
+    await safeAudit('trailing_restore_oldsl', { positionId: pos.id });
+  } catch (err) {
+    await setPositionProtected(pos.id, false);                         // doble-fallo → reconciler A.2 al SL viejo
+    await safeAudit('trailing_replace_failed', { positionId: pos.id, error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 // Mueve el SL recolocando el OCO. Bajo withSetupLock; cancel-first; persiste el SL DESPUÉS del placeOco
 // exitoso; fallback al SL viejo si el nuevo falla; protected NO se baja salvo doble-fallo. (FIX H1/H2/H3)
 export async function applyTrailingStop(deps: TrailingDeps, position: ReconcilePosition, newSl: number): Promise<void> {
@@ -41,19 +55,12 @@ export async function applyTrailingStop(deps: TrailingDeps, position: ReconcileP
     if (!pos.decisionId) { await safeAudit('trailing_no_decision_id', { positionId: pos.id }); return; }
     const legs = await getBracketLegs(pos.decisionId);
     try { await cancel(deps.client, pos.symbol, legs); }
-    catch { await safeAudit('trailing_cancel_failed', { positionId: pos.id }); return; }  // OCO viejo vive → sin tocar protected
+    catch (err) { await safeAudit('trailing_cancel_failed', { positionId: pos.id, error: err instanceof Error ? err.message : String(err) }); return; }
     let oco: OcoResult;
     try { oco = await place(deps.client, { symbol: pos.symbol, qty: pos.size, sl: newSl, tp: pos.tp }); }
     catch {
       // FIX H3: el SL nuevo pudo ser inválido (precio movió) → restaurar el OCO al SL VIEJO (válido)
-      try {
-        const back = await place(deps.client, { symbol: pos.symbol, qty: pos.size, sl: pos.sl, tp: pos.tp });
-        await updateLegsInPlace(legs, back);
-        await safeAudit('trailing_restore_oldsl', { positionId: pos.id });
-      } catch {
-        await setPositionProtected(pos.id, false);                     // doble-fallo → reconciler A.2 al SL viejo
-        await safeAudit('trailing_replace_failed', { positionId: pos.id });
-      }
+      await attemptFallback(place, deps.client, pos, legs);
       return;
     }
     await setPositionSl(pos.id, newSl);                                 // FIX H1: persistir DESPUÉS del éxito

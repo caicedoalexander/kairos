@@ -82,6 +82,8 @@ describe('applyTrailingStop', () => {
     expect(placeOco).toHaveBeenNthCalledWith(2, d.client, { symbol: 'BTC/USDT', qty: 0.5, sl: 95, tp: 110 }); // fallback al SL viejo
     expect(setPositionSl).not.toHaveBeenCalled();      // no persiste el candidato inválido
     expect(setPositionProtected).not.toHaveBeenCalled();
+    expect(setOrderExchangeId).toHaveBeenCalledWith('sl-row', 'OLD2-SL');  // legs actualizadas con OCO restaurado
+    expect(setOrderExchangeId).toHaveBeenCalledWith('tp-row', 'OLD2-TP');
   });
 
   it('doble-fallo (newSl y oldSl) → setPositionProtected(false) → A.2', async () => {
