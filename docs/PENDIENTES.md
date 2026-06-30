@@ -1,12 +1,13 @@
-# Pendientes — tras cerrar Fase 2 (sombra)
+# Pendientes — tras cerrar Fase 3 en código (trailing incluido)
 
-> Estado: **Fases 1, 2 y 3 (en código) COMPLETAS** (SP7→SP14). El loop razona end-to-end, el
-> ejecutor real + reconciler ccxt + monitor real + frescura OHLCV + comandos `/cierra`/`/modo`
-> están implementados y testados (suite 409/409). El LLM sigue en sombra. **Pendiente inmediato:**
-> smokes vigilados owner-gated de SP13 (ccxt real) y SP14 (cierre real con `/cierra`); queda trailing
-> (sprint propio). Luego Fase 4 (live).
+> Estado: **Fases 1, 2 y 3 COMPLETAS EN CÓDIGO** (SP7→SP14 + trailing). El loop razona end-to-end,
+> el ejecutor real + reconciler ccxt + monitor real + frescura OHLCV + comandos `/cierra`/`/modo` +
+> **trailing stop determinista** están implementados y testados (suite 432/432). El LLM sigue en
+> sombra. **Pendiente inmediato:** smokes vigilados owner-gated de SP13, SP14 y trailing. Luego
+> Fase 4 (live).
 >
-> Fecha de corte: 2026-06-30. `main` está **varios commits por delante de `origin`** (sin push).
+> Fecha de corte: 2026-06-30. `trailing-stop` está adelantado de `main`; `main` está
+> **varios commits por delante de `origin`** (sin push).
 
 ---
 
@@ -54,6 +55,13 @@
   (cuenta dedicada) el rechazo `InsufficientFunds` es el backstop suficiente. Antes de live: usar
   cuenta/sub-cuenta dedicada por estrategia, o derivar la qty a vender del balance reservado por el OCO
   en vez de `pos.size` crudo.
+- **Trailing stop** (bloqueante para usar el trailing en testnet): con `KAIROS_MODE=testnet`,
+  `risk_params.trailing` poblado en la estrategia, y una posición en ganancia activa, verificar:
+  (a) el monitor detecta que el precio supera el umbral de trail (`pct`); (b) el OCO antiguo
+  desaparece del exchange (cancelado correctamente — todos los ids de cada leg); (c) aparece un OCO
+  nuevo con SL más alto que el anterior; (d) no hay doble OCO ni venta de emergencia; (e) si el
+  precio retrocede, el SL no baja (ratchet). Hasta correr este smoke, el trailing en testnet no se
+  usa en producción.
 
 ### 1.3 Push a `origin`
 
@@ -78,8 +86,9 @@ Los siguientes ítems han sido implementados en testnet (SP12+SP13) y **ya no so
 - ✅ **`/cierra <symbol>`** — implementado en SP14 (cancel-first, idempotente, falla cerrado,
   schema estricto excluye cierra del LLM). Smoke owner-gated pendiente (ver §1.2).
 - ✅ **`/modo`** — implementado en SP14 (read-only, reporta el modo actual).
-- **Trailing stop** (ajuste dinámico del SL tras moves favorables) — sprint propio (cierra Fase 3
-  operativamente junto a los smokes).
+- ✅ **Trailing stop** — implementado en el sprint de trailing (determinista, opt-in por
+  `risk_params.trailing`, precio fresco, ratchet, cancel-todos, persistir-después, crash-safe).
+  Smoke owner-gated pendiente (ver §1.2).
 - **Conmutación de modo en caliente** (`/modo <sim|testnet|live>`) — sprint propio (muy sensible;
   `/modo` solo reporta el modo actual en SP14).
 - **Kill-switch con copia caliente en Redis** (`kairos:killswitch`, ARCHITECTURE §276): hoy `bot_state`

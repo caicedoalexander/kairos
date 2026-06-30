@@ -120,6 +120,18 @@ Progreso por sprints (SP):
   Suite **409/409** verde. Plan en `docs/superpowers/plans/2026-06-30-sp14-control-dinero.md`.
   **Fase 3 COMPLETA EN CÓDIGO** (queda solo el trailing — sprint propio — y los smokes
   owner-gated de SP13+SP14 para declarar Fase 3 operativa end-to-end).
+- **Trailing (hecho) — trailing stop determinista (cierra Fase 3 en código):** el monitor real
+  (`runMonitorTickReal`) sube el SL a medida que el precio avanza, recolocando el OCO residente.
+  Flujo: `fetchTicker` (precio fresco, FIX H1) → `computeTrailingSl` (ratchet: SL nunca baja) →
+  `cancelOco` (cancela **todos** los ids de cada leg, FIX H2) → `placeOco` → `setPositionSl`
+  **después** del place exitoso (persistir-después, FIX H1) → fill-first: el cierre por fill tiene
+  prioridad sobre el trailing. `protected` solo baja en el doble-fallo (FIX H3). Opt-in por
+  estrategia vía `risk_params.trailing` (jsonb: `{ pct, stepPct?, maxMoves? }`). Crash-safe: ventana
+  sin OCO cubierta por handoff M3 + reconciler A.2 (que también se endureció: actualiza legs en
+  sitio, 2 filas por decisión). El LLM **sigue en sombra**. El **smoke vigilado del trailing** en
+  testnet queda **owner-gated, pendiente** (verificar que una posición en ganancia sube el SL, el
+  OCO viejo desaparece, aparece uno nuevo con SL más alto, sin doble OCO ni venta de emergencia).
+  Suite **432/432** verde, typecheck limpio.
 - **SP13 (hecho) — reconciler/monitor ccxt + frescura OHLCV (cierra Fase 3 en código):**
   (1) **Reconciler ccxt** (`src/lib/reconcile/exchange-reconcile.ts`, `runExchangeReconcile`): corre en
   arranque + tick periódico (5 min) en modo real. **A.1** resuelve entradas inciertas
@@ -143,12 +155,13 @@ Progreso por sprints (SP):
   **🎉 FASE 3 COMPLETA EN CÓDIGO.** El loop testnet continuo desatendido puede habilitarse tras
   el smoke vigilado. Queda: SP14 ✅ hecho, trailing (sprint propio), Fase 4 (live).
 
-> Pendientes antes del **loop testnet continuo**: **smoke vigilado owner-gated de SP13** (valida
-> llamadas ccxt reales: `fetchOrder` por clientOrderId, fills, P&L, OCO re-protect) **Y smoke de
-> SP14** (cancela OCO real + vende + cierra con P&L). Trailing queda para un sprint propio. Hecho en
-> SP13: reconciler ccxt, monitor real close-first, frescura OHLCV, gate setup-aware, clientOrderId
-> determinista. Hecho en SP14: `/cierra` real (cancel-first, idempotente, falla cerrado) + `/modo`
-> read-only, schema estricto (LLM fuera del cierre).
+> **FASE 3 (testnet) COMPLETA EN CÓDIGO.** Todo lo que toca dinero real está implementado y testado
+> (suite 432/432): ejecutor real, OCO residente, reconciler ccxt, monitor real, frescura OHLCV, gate
+> setup-aware, `/cierra` real, `/modo`, y trailing stop determinista. El LLM sigue en sombra.
+> **Queda correr los smokes vigilados owner-gated** (SP13, SP14, trailing) antes de habilitar el
+> **loop testnet continuo desatendido**. Luego **Fase 4** (live, poco capital). Hecho en trailing:
+> trailing stop opt-in por estrategia, precio fresco, persistir-después, cancel-todos, legs en sitio,
+> ratchet, crash-safe.
 
 > Nota: `evaluate-candidate` es una **función de orquestación** dirigida por código (no
 > `defineWorkflow` descubierto) — el camino del dinero es determinista, no un workflow LLM. Vive en
