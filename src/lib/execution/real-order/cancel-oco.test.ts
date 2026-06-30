@@ -8,11 +8,29 @@ const legs = [
 ];
 
 describe('cancelOco', () => {
-  it('cancela UNA leg (en spot cancela toda la lista) y retorna', async () => {
+  it('con 2 legs distintas cancela AMBAS y retorna (contrato nuevo: todos los ids)', async () => {
     const cancelOrder = vi.fn(async () => ({}));
     await cancelOco({ cancelOrder } as CancelOcoClient, 'BTC/USDT', legs);
-    expect(cancelOrder).toHaveBeenCalledTimes(1);
+    expect(cancelOrder).toHaveBeenCalledTimes(2);
     expect(cancelOrder).toHaveBeenCalledWith('X-SL', 'BTC/USDT');
+    expect(cancelOrder).toHaveBeenCalledWith('X-TP', 'BTC/USDT');
+  });
+
+  it('cancela TODOS los exchangeOrderId distintos (incl. legs viejas: OrderNotFound=éxito)', async () => {
+    const calls: string[] = [];
+    const cancelOrder = vi.fn(async (id: string) => {
+      calls.push(id);
+      if (id === 'OLD-SL' || id === 'OLD-TP') throw new ccxt.OrderNotFound('gone'); // legs viejas canceladas
+      return {};
+    });
+    const legs4 = [
+      { id: 'r1', purpose: 'sl' as const, exchangeOrderId: 'OLD-SL', status: 'canceled' },
+      { id: 'r2', purpose: 'tp' as const, exchangeOrderId: 'OLD-TP', status: 'canceled' },
+      { id: 'r3', purpose: 'sl' as const, exchangeOrderId: 'LIVE-SL', status: 'pending' },
+      { id: 'r4', purpose: 'tp' as const, exchangeOrderId: 'LIVE-TP', status: 'pending' },
+    ];
+    await cancelOco({ cancelOrder } as CancelOcoClient, 'BTC/USDT', legs4);
+    expect(calls).toEqual(expect.arrayContaining(['OLD-SL', 'OLD-TP', 'LIVE-SL', 'LIVE-TP'])); // intentó todos
   });
 
   it('OrderNotFound (OCO ya disparado/cancelado) = éxito (no lanza)', async () => {
