@@ -24,3 +24,12 @@ export async function getDecision(id: string, exec: Executor = query): Promise<D
   );
   return rows[0] ? { id: rows[0].id, verdict: rows[0].verdict } : null;
 }
+
+// SP13: lee el verdict (sl/tp) de una decisión para re-proteger una entrada reconciliada.
+export async function getDecisionVerdict(decisionId: string, exec: Executor = query): Promise<{ sl: number; tp: number } | null> {
+  const rows = await exec<{ verdict: { sl: number; tp: number } }>(
+    `SELECT verdict FROM kairos.decisions WHERE id = $1`, [decisionId],
+  );
+  const v = rows[0]?.verdict;
+  return v ? { sl: Number(v.sl), tp: Number(v.tp) } : null;
+}
