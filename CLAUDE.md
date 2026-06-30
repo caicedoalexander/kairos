@@ -104,6 +104,22 @@ Progreso por sprints (SP):
   `docs/superpowers/plans/2026-06-29-sp12-ejecutor-real-testnet.md`. **Gate: sólo smoke vigilado; el
   loop continuo desatendido se habilita en SP13** (ver precondición dura I1 en el spec §Seguridad:
   doble-compra secuencial tras fill incierto — no habilitar el loop sin el reconciler ccxt).
+- **SP14 (hecho) — comandos de control que tocan dinero (`/cierra`, `/modo`):** cierra los dos
+  comandos diferidos desde SP11. **`/cierra <symbol>`** es slash-only y determinista — el LLM es
+  estructuralmente incapaz de emitirlo (`ControlResultSchema` estricto no incluye `cierra` ni
+  `symbol`; línea roja H1). En `testnet|live`: cancel-first (cancela la OCO residente por leg vía
+  ccxt), market sell IOC, cierra en DB con P&L real — todo bajo `withSetupLock` (serializa vs.
+  ejecutor/otro cierre). Idempotente: `closeOpenPosition` solo cierra si `status='open'`;
+  pre-check y re-check dentro del lock. **Falla cerrado (FIX H2):** si la venta falla tras cancelar
+  el OCO → `setPositionProtected(false)` + audit `close_command_failed` → reconciler A.2 de SP13.
+  Si `cancelOco` falla → aborta sin tocar `protected` (la posición sigue protegida). En `sim`:
+  cierre sintético al último precio (`getLatestClosePrice`) con fill peor que mid. **`/modo`**
+  read-only: reporta el modo actual; la conmutación en caliente se difirió a un sprint propio. El
+  LLM **sigue en sombra**. El **smoke vigilado de `/cierra`** en testnet queda **owner-gated,
+  pendiente** (cancela el OCO real de Binance, vende, verifica posición `closed` con P&L real).
+  Suite **409/409** verde. Plan en `docs/superpowers/plans/2026-06-30-sp14-control-dinero.md`.
+  **Fase 3 COMPLETA EN CÓDIGO** (queda solo el trailing — sprint propio — y los smokes
+  owner-gated de SP13+SP14 para declarar Fase 3 operativa end-to-end).
 - **SP13 (hecho) — reconciler/monitor ccxt + frescura OHLCV (cierra Fase 3 en código):**
   (1) **Reconciler ccxt** (`src/lib/reconcile/exchange-reconcile.ts`, `runExchangeReconcile`): corre en
   arranque + tick periódico (5 min) en modo real. **A.1** resuelve entradas inciertas
@@ -127,10 +143,12 @@ Progreso por sprints (SP):
   **🎉 FASE 3 COMPLETA EN CÓDIGO.** El loop testnet continuo desatendido puede habilitarse tras
   el smoke vigilado. Queda: SP14 (`/cierra`, `/modo`), trailing (sprint propio), Fase 4 (live).
 
-> Pendientes antes del **loop testnet continuo**: únicamente el **smoke vigilado owner-gated de SP13**
-> (valida llamadas ccxt reales contra Binance testnet). Todo lo demás de Fase 3 está implementado.
-> Luego SP14 (`/cierra` y `/modo`) y trailing (sprint propio). Hecho en SP13: reconciler ccxt, monitor
-> real close-first, frescura OHLCV, gate setup-aware, clientOrderId determinista.
+> Pendientes antes del **loop testnet continuo**: **smoke vigilado owner-gated de SP13** (valida
+> llamadas ccxt reales: `fetchOrder` por clientOrderId, fills, P&L, OCO re-protect) **Y smoke de
+> SP14** (cancela OCO real + vende + cierra con P&L). Trailing queda para un sprint propio. Hecho en
+> SP13: reconciler ccxt, monitor real close-first, frescura OHLCV, gate setup-aware, clientOrderId
+> determinista. Hecho en SP14: `/cierra` real (cancel-first, idempotente, falla cerrado) + `/modo`
+> read-only, schema estricto (LLM fuera del cierre).
 
 > Nota: `evaluate-candidate` es una **función de orquestación** dirigida por código (no
 > `defineWorkflow` descubierto) — el camino del dinero es determinista, no un workflow LLM. Vive en
@@ -269,10 +287,12 @@ razonamiento (sigue en `sim` para medir edge) → **testnet** (plumbing real de 
 sim; no toques dinero real antes de validar en sim y testnet. Dashboard, futures, shorts y
 multi-exchange están **fuera de alcance** por ahora (no los construyas — YAGNI).
 
-**Dónde estamos:** Fases 1, 2 y **3 (en código) completas**. **SP13 cierra Fase 3 en código**: el
-reconciler ccxt, monitor real, frescura OHLCV y gate setup-aware están implementados y testados
-(suite **381/381**). El LLM **sigue en sombra**. **Pendiente inmediato (owner-gated):** el **smoke
-vigilado de SP13** — correr contra Binance testnet para confirmar `fetchOrder` por `clientOrderId`,
-fills reales, P&L, re-protección del OCO y frescura de `ohlcv_candles`; hasta correrlo, el loop
-testnet continuo desatendido no se habilita. **Luego:** SP14 (`/cierra`, `/modo` — control que
-toca dinero), trailing (sprint propio) y Fase 4 (**live**, poco capital).
+**Dónde estamos:** Fases 1, 2 y **3 (en código) completas**. **SP14 cierra los comandos de control
+que tocan dinero** (`/cierra` real + `/modo` read-only, suite **409/409**). El LLM **sigue en
+sombra**. **Pendientes inmediatos (owner-gated):** (a) el **smoke vigilado de SP13** — correr
+contra Binance testnet para confirmar `fetchOrder` por `clientOrderId`, fills reales, P&L,
+re-protección del OCO y frescura de `ohlcv_candles`; (b) el **smoke vigilado de SP14** — cerrar
+una posición real con `/cierra`, verificar que el OCO desaparece del exchange y la posición queda
+`closed` con P&L real. Hasta correr ambos smokes, el loop testnet continuo desatendido no se
+habilita. **Luego:** trailing (sprint propio para cerrar Fase 3 operativamente) y Fase 4 (**live**,
+poco capital).

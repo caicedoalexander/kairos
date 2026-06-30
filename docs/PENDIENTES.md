@@ -1,11 +1,12 @@
 # Pendientes — tras cerrar Fase 2 (sombra)
 
-> Estado: **Fases 1, 2 y 3 (en código) COMPLETAS** (SP7→SP13). El loop razona end-to-end y el
-> ejecutor real + reconciler ccxt + monitor real + frescura OHLCV están implementados y testados
-> (suite 381/381). El LLM sigue en sombra. **Pendiente inmediato:** smoke vigilado owner-gated de
-> SP13 (owner-gated, contra Binance testnet real). Luego SP14 (`/cierra`, `/modo`) y trailing.
+> Estado: **Fases 1, 2 y 3 (en código) COMPLETAS** (SP7→SP14). El loop razona end-to-end, el
+> ejecutor real + reconciler ccxt + monitor real + frescura OHLCV + comandos `/cierra`/`/modo`
+> están implementados y testados (suite 409/409). El LLM sigue en sombra. **Pendiente inmediato:**
+> smokes vigilados owner-gated de SP13 (ccxt real) y SP14 (cierre real con `/cierra`); queda trailing
+> (sprint propio). Luego Fase 4 (live).
 >
-> Fecha de corte: 2026-06-29. `main` está **varios commits por delante de `origin`** (sin push).
+> Fecha de corte: 2026-06-30. `main` está **varios commits por delante de `origin`** (sin push).
 
 ---
 
@@ -42,6 +43,11 @@
   dejando la posición `protected=false` → corregir restando `feeBase` (igual que el executor real en
   `execute-order-real.ts:78`) ANTES de habilitar el loop continuo / antes de live.
   Sin este smoke, el loop testnet continuo desatendido **no debe habilitarse**.
+- **SP14 `/cierra` real** (bloqueante para usar el comando en testnet): con `KAIROS_MODE=testnet` y
+  una posición abierta real, enviar `/cierra BTC/USDT` por WhatsApp → verificar: (a) el OCO desaparece
+  del exchange (cancelado por leg vía `cancelOrder`); (b) la venta market IOC ejecuta; (c) la posición
+  queda `status='closed'` en DB con P&L real calculado desde fills; (d) si se repite el comando → "ya
+  estaba cerrada" (idempotencia). Hasta correr este smoke, `/cierra` en testnet no se usa en producción.
 
 ### 1.3 Push a `origin`
 
@@ -63,15 +69,18 @@ Los siguientes ítems han sido implementados en testnet (SP12+SP13) y **ya no so
 
 **Pendientes aún diferidos:**
 
-- **Comandos de control que tocan dinero** (SP11 los difirió): `/cierra <symbol>` (`close_position`
-  idempotente) y `/modo <sim|testnet|live>` (conmuta modo, muy sensible — podría ir a live). Se añaden
-  al picklist `ControlIntent` + un handler determinista → **SP14**.
-- **Trailing stop** (ajuste dinámico del SL tras moves favorables) — sprint propio (no es SP14).
+- ✅ **`/cierra <symbol>`** — implementado en SP14 (cancel-first, idempotente, falla cerrado,
+  schema estricto excluye cierra del LLM). Smoke owner-gated pendiente (ver §1.2).
+- ✅ **`/modo`** — implementado en SP14 (read-only, reporta el modo actual).
+- **Trailing stop** (ajuste dinámico del SL tras moves favorables) — sprint propio (cierra Fase 3
+  operativamente junto a los smokes).
+- **Conmutación de modo en caliente** (`/modo <sim|testnet|live>`) — sprint propio (muy sensible;
+  `/modo` solo reporta el modo actual en SP14).
 - **Kill-switch con copia caliente en Redis** (`kairos:killswitch`, ARCHITECTURE §276): hoy `bot_state`
   vive solo en Postgres (suficiente para un proceso). En testnet con procesos separados, la copia Redis
-  reduce latencia — candidato a SP14 o limpieza.
+  reduce latencia — candidato a sprint de limpieza.
 - **Dedup de mensajes inbound** del control (idempotencia por `key.id`): hoy aceptado (los comandos son
-  idempotentes); una redelivery de Evolution re-invoca el LLM y re-responde (costo, no dinero) — candidato a SP14.
+  idempotentes); una redelivery de Evolution re-invoca el LLM y re-responde (costo, no dinero) — candidato a sprint de limpieza.
 
 ---
 
