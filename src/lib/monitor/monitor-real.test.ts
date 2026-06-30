@@ -102,8 +102,14 @@ describe('runMonitorTickReal', () => {
     vi.mocked(getProtectedOpenPositions).mockResolvedValue([pos]);
     vi.mocked(getBracketLegs).mockResolvedValue(legs);
     vi.mocked(fetchLegState).mockResolvedValue({ status: 'closed', filled: 0.5 }); // leg llena → cierra
+    vi.mocked(fetchExitFromTrades).mockResolvedValue({ exitPrice: 110, exitFee: 0.06, qty: 0.5 });
     vi.mocked(closeOpenPosition).mockResolvedValue(true);
-    await runMonitorTickReal(new Date(), { client: { ...baseClient, fetchTicker: vi.fn() }, mode: 'testnet', notify: vi.fn(async () => ({ messageId: 'm' })) } as never);
+    // Hace falsificable la aserción: con trailing activo, SI el orden fuera incorrecto
+    // (maybeTrail antes del fill-check), applyTrailingStop SÍ se llamaría.
+    vi.mocked(getStrategy).mockResolvedValue({ riskParams: { trailing: {} } } as never);
+    vi.mocked(parseTrailingConfig).mockReturnValue({ enabled: true, activation_pct: 0.01, distance_pct: 0.015, min_step_pct: 0.003 });
+    vi.mocked(computeTrailingSl).mockReturnValue(108);
+    await runMonitorTickReal(new Date(), { client: { ...baseClient, fetchTicker: vi.fn(async () => ({ last: 110 })) }, mode: 'testnet', notify: vi.fn(async () => ({ messageId: 'm' })) } as never);
     expect(applyTrailingStop).not.toHaveBeenCalled();
   });
 });

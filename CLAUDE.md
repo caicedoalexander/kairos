@@ -118,8 +118,8 @@ Progreso por sprints (SP):
   LLM **sigue en sombra**. El **smoke vigilado de `/cierra`** en testnet queda **owner-gated,
   pendiente** (cancela el OCO real de Binance, vende, verifica posición `closed` con P&L real).
   Suite **409/409** verde. Plan en `docs/superpowers/plans/2026-06-30-sp14-control-dinero.md`.
-  **Fase 3 COMPLETA EN CÓDIGO** (queda solo el trailing — sprint propio — y los smokes
-  owner-gated de SP13+SP14 para declarar Fase 3 operativa end-to-end).
+  **Fase 3 COMPLETA EN CÓDIGO** (quedan solo los smokes owner-gated de SP13+SP14+trailing
+  para declarar Fase 3 operativa end-to-end).
 - **Trailing (hecho) — trailing stop determinista (cierra Fase 3 en código):** el monitor real
   (`runMonitorTickReal`) sube el SL a medida que el precio avanza, recolocando el OCO residente.
   Flujo: `fetchTicker` (precio fresco, FIX H1) → `computeTrailingSl` (ratchet: SL nunca baja) →
@@ -153,7 +153,7 @@ Progreso por sprints (SP):
   de `ohlcv_candles`) queda **owner-gated, pendiente**. Plan en
   `docs/superpowers/plans/2026-06-29-sp13-reconciler-monitor-ccxt.md`.
   **🎉 FASE 3 COMPLETA EN CÓDIGO.** El loop testnet continuo desatendido puede habilitarse tras
-  el smoke vigilado. Queda: SP14 ✅ hecho, trailing (sprint propio), Fase 4 (live).
+  el smoke vigilado. Queda: SP14 ✅ hecho, trailing ✅ hecho, Fase 4 (live).
 
 > **FASE 3 (testnet) COMPLETA EN CÓDIGO.** Todo lo que toca dinero real está implementado y testado
 > (suite 432/432): ejecutor real, OCO residente, reconciler ccxt, monitor real, frescura OHLCV, gate

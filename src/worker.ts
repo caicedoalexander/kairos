@@ -38,7 +38,7 @@ const MONITOR_INTERVAL_MS = Number.isFinite(parsedMonitor) && parsedMonitor > 0 
 const MONITOR_QUEUE = 'monitor-tick';
 
 // Credenciales en closure: el modelo nunca ve las keys ni elige la cuenta (§líneas rojas).
-// El cast es seguro en runtime: el cliente ccxt implementa RealClient & OrderStateClient (SP12/SP13).
+// El cast es seguro en runtime: el cliente ccxt implementa RealClient & OrderStateClient & CancelOcoClient & PriceClient (SP12/SP13/trailing).
 async function realDeps() {
   const client = getAuthenticatedClient();
   await client.loadMarkets();

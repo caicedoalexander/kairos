@@ -60,8 +60,10 @@
   (a) el monitor detecta que el precio supera el umbral de trail (`pct`); (b) el OCO antiguo
   desaparece del exchange (cancelado correctamente — todos los ids de cada leg); (c) aparece un OCO
   nuevo con SL más alto que el anterior; (d) no hay doble OCO ni venta de emergencia; (e) si el
-  precio retrocede, el SL no baja (ratchet). Hasta correr este smoke, el trailing en testnet no se
-  usa en producción.
+  precio retrocede, el SL no baja (ratchet); (f) simular/observar un crash entre la recolocación
+  del OCO y la persistencia deja la posición **re-protegida sin doble-OCO persistente** (el
+  handoff M3 + reconciler A.2 la cubren; nunca naked; el SL nunca baja — deuda de crash-safety
+  acotada y testnet-aceptable). Hasta correr este smoke, el trailing en testnet no se usa en producción.
 
 ### 1.3 Push a `origin`
 

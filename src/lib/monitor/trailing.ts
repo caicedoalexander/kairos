@@ -58,7 +58,8 @@ export async function applyTrailingStop(deps: TrailingDeps, position: ReconcileP
     catch (err) { await safeAudit('trailing_cancel_failed', { positionId: pos.id, error: err instanceof Error ? err.message : String(err) }); return; }
     let oco: OcoResult;
     try { oco = await place(deps.client, { symbol: pos.symbol, qty: pos.size, sl: newSl, tp: pos.tp }); }
-    catch {
+    catch (err) {
+      await safeAudit('trailing_newsl_rejected', { positionId: pos.id, newSl, error: err instanceof Error ? err.message : String(err) });
       // FIX H3: el SL nuevo pudo ser inválido (precio movió) → restaurar el OCO al SL VIEJO (válido)
       await attemptFallback(place, deps.client, pos, legs);
       return;
