@@ -56,7 +56,7 @@ export async function executeOrderReal(p: ExecuteOrderRealParams, deps: RealOrde
 
     // Entrada real (puede lanzar = incierta → nunca se asume llenada).
     let entry: EntryResult;
-    try { entry = await deps.placeEntry(deps.client, { symbol: p.symbol, size, refPrice: p.refPrice, slippageBps: DEFAULT_SIM_PARAMS.slippage_bps }); }
+    try { entry = await deps.placeEntry(deps.client, { symbol: p.symbol, size, refPrice: p.refPrice, slippageBps: DEFAULT_SIM_PARAMS.slippage_bps, clientOrderId: idem }); }
     catch {
       await updateOrderStatus(claim.id, 'pending_execution');
       await appendAuditLog({ eventType: 'entry_uncertain', actor: 'execute-order-real', payload: { idem } });

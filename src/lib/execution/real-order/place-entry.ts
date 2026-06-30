@@ -10,7 +10,7 @@ export interface EntryClient {
 }
 interface RawOrder { id: string; filled?: number; average?: number; fee?: CcxtFee; fees?: CcxtFee[] }
 
-export interface PlaceEntryArgs { symbol: string; size: number; refPrice: number; slippageBps: number }
+export interface PlaceEntryArgs { symbol: string; size: number; refPrice: number; slippageBps: number; clientOrderId: string }
 // CONTRATO PARA EL CALLER (executeOrderReal, §18.3): `filledQty === 0` significa que la IOC
 // no cruzó el book. El caller DEBE hacer early return en ese caso — NUNCA crear posición ni OCO
 // con size 0; el size real de la posición sale siempre de los fills reales.
@@ -27,7 +27,7 @@ export async function placeEntry(client: EntryClient, a: PlaceEntryArgs): Promis
   if (!meetsLegMin(amount, a.refPrice, market.limits.amount.min ?? 0, market.limits.cost.min ?? 0)) {
     return { belowMin: true };
   }
-  const order = await client.createOrder(a.symbol, 'limit', 'buy', amount, cap, { timeInForce: 'IOC' });
+  const order = await client.createOrder(a.symbol, 'limit', 'buy', amount, cap, { timeInForce: 'IOC', clientOrderId: a.clientOrderId });
   const filledQty = order.filled ?? 0;
   const totalFee = sumFee(order);
   return {
@@ -44,3 +44,8 @@ function sumFee(order: RawOrder): number {
   if (order.fees && order.fees.length > 0) return order.fees.reduce((s, f) => s + (f.cost ?? 0), 0);
   return order.fee?.cost ?? 0;
 }
+
+// FIX M1 (SP13): el P&L resta `fee`/`exitFee` como escalares en quote. Verificado contra ccxt:
+// `order.fees[].cost` (por-trade) lleva su `commissionAsset` real, que puede ser BNB. El supuesto
+// operativo de SP13 es "fees en quote (USDT)"; el smoke owner-gated verifica la moneda real en testnet
+// y desactiva el descuento BNB si aparece. No se normaliza en código en SP13 (deuda declarada).
