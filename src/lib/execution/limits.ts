@@ -19,3 +19,9 @@ export const SETUP_LOCK_TTL_MS = 45_000;
 export const STOP_LIMIT_OFFSET_BPS = 20;
 export const MAX_OCO_RETRIES = 3;
 export const OCO_RETRY_BACKOFF_MS = 300;   // base del backoff exponencial (300, 600, …)
+
+// Reconciler ccxt (SP13): cadencia del tick periódico de auto-sanación (arranque corre aparte).
+export const RECONCILE_INTERVAL_MS = 5 * 60_000;
+
+// Frescura OHLCV (SP13): cadencia del refresh; debe ser ≤ MONITOR_INTERVAL_MS (el worker la valida).
+export const OHLCV_REFRESH_INTERVAL_MS = 60_000;
