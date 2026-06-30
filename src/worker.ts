@@ -21,6 +21,8 @@ import { placeOco } from './lib/execution/real-order/place-oco.ts';
 import { emergencyClose } from './lib/execution/real-order/emergency-close.ts';
 import type { RealClient } from './lib/execution/execute-order-real.ts';
 import type { OrderStateClient } from './lib/execution/real-order/order-state.ts';
+import type { CancelOcoClient } from './lib/execution/real-order/cancel-oco.ts';
+import type { PriceClient } from './lib/monitor/monitor-real.ts';
 import { sendWhatsApp } from './notify/whatsapp.ts';
 import { RECONCILE_INTERVAL_MS, OHLCV_REFRESH_INTERVAL_MS } from './lib/execution/limits.ts';
 
@@ -40,7 +42,7 @@ const MONITOR_QUEUE = 'monitor-tick';
 async function realDeps() {
   const client = getAuthenticatedClient();
   await client.loadMarkets();
-  const real = client as unknown as (RealClient & OrderStateClient);
+  const real = client as unknown as (RealClient & OrderStateClient & CancelOcoClient & PriceClient);
   return { client: real, placeOco, emergencyClose, mode: getMode() };
 }
 

@@ -5,11 +5,17 @@ import { appendAuditLog } from '../../db/repositories/audit-log.ts';
 import { notifyBestEffort } from '../../notify/best-effort.ts';
 import { fetchLegState, fetchExitFromTrades, type OrderStateClient } from '../execution/real-order/order-state.ts';
 import type { RealClient } from '../execution/execute-order-real.ts';
+import type { CancelOcoClient } from '../execution/real-order/cancel-oco.ts';
 import type { TradingMode } from '../mode.ts';
+import { getStrategy } from '../../db/repositories/strategies.ts';
+import { parseTrailingConfig } from './trailing-config.ts';
+import { computeTrailingSl, applyTrailingStop } from './trailing.ts';
+
+export interface PriceClient { fetchTicker(symbol: string): Promise<{ last?: number; bid?: number }> }
 
 export interface MonitorRealDeps {
-  // RealClient & OrderStateClient: consistente con exchange-reconcile.ts (Task 5)
-  client: RealClient & OrderStateClient;
+  // RealClient & OrderStateClient & CancelOcoClient & PriceClient: FIX M2 (trailing)
+  client: RealClient & OrderStateClient & CancelOcoClient & PriceClient;
   mode: TradingMode;
   notify: (text: string) => Promise<{ messageId: string | null }>;
 }
@@ -40,7 +46,22 @@ async function checkOne(deps: MonitorRealDeps, p: ReconcilePosition, asOf: Date)
   const hit = states.find((s) => s.st.filled > 0 && FILLED.has(s.st.status));
   if (hit) return closeFromLeg(deps, p, hit.leg, asOf);
   if (states.every((s) => TERMINAL.has(s.st.status))) { await handoff(p); return false; } // OCO muerto (gap L1)
-  return false; // alguna leg sigue viva → nada
+  await maybeTrail(deps, p);   // OCO vivo → evaluar trailing (el cierre por fill ya tuvo prioridad arriba)
+  return false;
+}
+
+// Evalúa y aplica el trailing si la estrategia lo tiene activo y la regla lo indica. Best-effort: un fallo
+// lo captura el try/catch de runMonitorTickReal. El precio es FRESCO (fetchTicker, FIX H1).
+async function maybeTrail(deps: MonitorRealDeps, p: ReconcilePosition): Promise<void> {
+  const strat = await getStrategy(p.strategyId);
+  const cfg = parseTrailingConfig(strat?.riskParams ?? {});
+  if (!cfg) return;
+  const ticker = await deps.client.fetchTicker(p.symbol);
+  const price = ticker.last;
+  if (typeof price !== 'number' || !(price > 0)) return;
+  const newSl = computeTrailingSl({ entry: p.entry, currentSl: p.sl, price, cfg });
+  if (newSl === null) return;
+  await applyTrailingStop({ client: deps.client, mode: deps.mode, notify: deps.notify }, p, newSl);
 }
 
 // FIX H2 (close-first): cierra la posición ANTES de insertar el fill. Si otro tick ya la cerró
