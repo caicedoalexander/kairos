@@ -121,12 +121,25 @@ siguiente (no tumba el arranque). Por cada marcador durable:
 **A.1 — Entrada sin resolver** (`orders.status IN ('pending','pending_execution')` y sin posición para
 su decisión). Reconstruye `clientOrderId` desde `idempotency_key`. `fetchOrder(undefined, symbol,
 { clientOrderId })` (o `fetchOpenOrders`/`fetchClosedOrders` + match por `clientOrderId` si el exchange
-no soporta lookup directo — a verificar contra ccxt real).
+no soporta lookup directo — **incógnita linchpin de A.1, a verificar contra ccxt-binance real ANTES de
+codificar**, §Verificación H3).
 
-- Exchange dice **llenada** (`status` closed/filled, `filled>0`): `fetchOrderTrades` → registra fill(s)
-  reales (idempotente: salta si `getFillsForOrder` ya tiene el fill), abre posición (`protected=false`)
-  **si no existe ya** (guarda contra el índice `idx_positions_open_setup`), **re-protege** (`placeOco`)
-  → `protected=true`, marca la orden `filled`. Audita `reconcile_entry_filled`.
+> **FIX H1 (carrera reconciler-vs-executor) — filtro de frescura obligatorio.** El executor mantiene
+> `withSetupLock` durante todo `claim → placeEntry → openPosition` (`execute-order-real.ts:47-115`), y
+> una entrada recién reclamada queda `status='pending'` (`orders.ts:38`) **antes** de tocar el exchange.
+> Si el reconciler-tick leyera esa entrada fresca, haría `fetchOrder` → `OrderNotFound` (aún no existe
+> en el exchange) → la marcaría `canceled` mientras el executor la está comprando: desync no
+> determinista. Por eso el finder `findUnresolvedEntries` **DEBE** excluir entradas in-flight con
+> `AND created_at < now() - interval '5 minutes'` (≥ `SETUP_LOCK_TTL_MS`), igual que `findStuckEntryOrders`
+> (`orders.ts:106-114`). **Invariante:** el reconciler nunca saca una entrada de `pending`/
+> `pending_execution` antes de que la ventana del lock haya expirado — para entonces el executor ya
+> abrió la posición o ya marcó la orden, y no hay nada vivo que pisar. (El **gate** de dedup, en cambio,
+> NO lleva filtro de frescura: una `pending_execution` fresca debe bloquear B de inmediato — §Componente D.)
+
+- Exchange dice **llenada** (`status` closed/filled, `filled>0`): abre posición (`protected=false`)
+  **si no existe ya** (el ancla de idempotencia es la fila de posición vía `idx_positions_open_setup`,
+  no los fills) → registra fill(s) reales (`fetchOrderTrades`) → **re-protege** (`placeOco`) →
+  `protected=true`, marca la orden `filled`. Audita `reconcile_entry_filled`.
 - Exchange dice **no llenada / no existe**: marca la orden `canceled`. Audita `reconcile_entry_void`.
   El setup queda libre.
 
@@ -144,8 +157,18 @@ legs OCO por `exchange_order_id` (de `orders` purpose sl/tp con `parent_id` = en
   real). Audita `reconcile_reprotected` / `reconcile_reprotect_emergency`.
 
 > **Idempotencia del reconciler:** cada acción es condicional al estado DB actual (`closeOpenPosition`
-> solo cierra si `status='open'`; `openPosition` choca con el índice si ya existe; `getFillsForOrder`
-> evita doble-registro de fills). Correr el reconciler dos veces seguidas es inocuo.
+> solo cierra si `status='open'`; `openPosition` choca con el índice parcial `idx_positions_open_setup`
+> si ya existe). El **ancla de idempotencia es la fila de posición + el `orders.status`**, NO los fills.
+> Correr el reconciler dos veces seguidas es inocuo: la segunda corrida ve la posición ya abierta/cerrada
+> y salta.
+>
+> **FIX M2 (fills sin clave) — decisión consciente.** `kairos.fills` no tiene trade-id ni clave de
+> idempotencia (`fills.ts:13-15`), así que un fill de salida podría registrarse dos veces ante re-tick.
+> **Se acepta**: el P&L canónico que alimenta el gate de drawdown (`getConsecutiveLosses`/
+> `getDailyRealizedPnl`, `positions.ts:74-105`) vive en `positions.realized_pnl` (set idempotente vía
+> `closeOpenPosition`), no en los fills. Los fills son **auditoría best-effort**. No se añade columna
+> (sin cambios de esquema en SP13). El orden close-first del monitor (FIX H2) cierra de todos modos la
+> ventana de re-tick para el camino recurrente.
 
 ### Componente B — Monitor de cierres reales · `src/lib/monitor/monitor-real.ts`
 
@@ -157,24 +180,37 @@ posiciones **protegidas** (`protected=true`); las desprotegidas son trabajo del 
 Por cada posición abierta protegida:
 - Lee las legs OCO de su decisión (`orders` purpose sl/tp con `exchange_order_id`).
 - `fetchOrder(legExchangeId, symbol)` por leg.
-- Si una leg **llenó** (`status` closed/filled, `filled>0`): `fetchOrderTrades` → exit real;
-  `realizedPnl = (exitAvg − entry)·qty − exitFee − entryFee`; registra fill de salida (`insertFill`
-  contra la leg), `closeOpenPosition`, `closeBracketLegs(hitType)` (Binance auto-cancela la hermana
-  server-side; el update DB la marca canceled), audita `position_closed_real`, notify best-effort
-  (template, sin LLM).
+- Si una leg **llenó** (`status` closed/filled, `filled>0`): **close-first (FIX H2)** —
+  `closeOpenPosition(positionId, realizedPnl, asOf)` **PRIMERO**; solo si devuelve `true` (era la
+  primera corrida en cerrarla), registra el fill de salida (`insertFill` contra la leg) y
+  `closeBracketLegs(hitType)`, audita `position_closed_real`, notify best-effort (template, sin LLM). Si
+  devuelve `false`, otro tick ya cerró → no hace nada. `realizedPnl = (exitAvg − entry)·qty − exitFee −
+  entryFee` con el exit real de `fetchOrderTrades`. Este orden (cerrar antes de insertar el fill) hace el
+  cierre idempotente ante re-tick/crash: `getOpenPositions` deja de devolver la posición tras el cierre,
+  así que el fill de salida nunca se duplica.
+- **Ambas legs en estado terminal sin fill** (`canceled`/`expired`, `filled=0` — el gap L1, o una
+  cancelación externa): **FIX M3** — el monitor hace `setPositionProtected(id, false)` y audita
+  `monitor_oco_dead`; la posición pasa así al dominio del reconciler A.2, que la re-protege o aplana. No
+  se queda viva y sin vigilar.
 - Ambas abiertas → nada. El OCO server-side es la autoridad; el monitor **no resuelve velas** en real.
 
-> **Riesgo residual L1 (heredado de SP12):** STOP_LOSS_LIMIT puede no llenar en un *gap*. Si el monitor
-> ve la leg SL en estado `canceled`/`expired` sin fill **y** la posición sin balance base resuelto, lo
-> trata como hueco a reconciliar (delega al reconciler / cierre de emergencia), no como cierre limpio.
-> En testnet (play money) es aceptable; la red real ante gap se endurece en Fase 4.
+> **Riesgo residual L1 (heredado de SP12):** STOP_LOSS_LIMIT puede no llenar en un *gap*. El handoff M3
+> (arriba) es la red: legs terminales sin fill → `protected=false` → A.2. En testnet (play money) es
+> aceptable; la red real ante gap se endurece en Fase 4.
+>
+> **Riesgo residual L2 (fill parcial):** una leg `partially_filled` (status `open`, `0 < filled < qty`)
+> cae hoy en "ambas abiertas → nada" hasta que complete o se cancele. Edge aceptable en testnet; se
+> anota como residual junto a L1, no se maneja en SP13.
 
 ### Componente C — Frescura OHLCV · `src/lib/market-data/refresh.ts`
 
 `refreshOhlcv(deps)`: por cada `symbol × timeframe` de `SYMBOLS`/`TIMEFRAMES` (config.ts), lee la última
-`open_time` almacenada (`getLatestCandleTime(symbol, timeframe)`), `fetchClosedOHLCV` (cliente
-**público**, sin API key — reusa `createPublicClient`) desde ahí, `upsertCandles` (idempotente, ON
-CONFLICT DO NOTHING). Job BullMQ repetible a `OHLCV_REFRESH_INTERVAL_MS` (≤ `MONITOR_INTERVAL_MS`).
+`open_time` almacenada (`getLatestOpenTime(symbol, timeframe)` — **nombre real**, `ohlcv-candles.ts:36`,
+devuelve `Date | null`; convertir a ms para el `since` de `fetchClosedOHLCV`), `fetchClosedOHLCV`
+(cliente **público**, sin API key — reusa `createPublicClient`) desde ahí, `upsertCandles` (idempotente,
+ON CONFLICT DO NOTHING). **FIX L3:** `createPublicClient` no carga markets; el refresh debe llamar
+`loadMarkets()` (idempotente) una vez antes del primer `fetchClosedOHLCV`, como hace `defaultExecuteReal`
+(`evaluate-candidate.ts:37`). Job BullMQ repetible a `OHLCV_REFRESH_INTERVAL_MS` (≤ `MONITOR_INTERVAL_MS`).
 Best-effort: fallo de fetch de un símbolo → audita `ohlcv_refresh_failed` y sigue con el siguiente.
 Mantiene al scanner alimentado en el loop desatendido. Aplica a **todos** los modos (el scanner corre
 sobre velas en sim también), pero solo importa para corridas continuas.
@@ -195,10 +231,13 @@ composición con `hasOpenPositionForSetup`): true si hay posición abierta **o**
 
 Sin columnas nuevas. SP13 **lee** estados que SP12 ya persiste y **añade** lecturas:
 - `getFillsForOrder(orderId)` → `SELECT ... FROM kairos.fills WHERE order_id = $1 ORDER BY ts` (hoy el
-  repo `fills.ts` solo tiene `insertFill`; el reconciler/monitor necesitan leer para idempotencia y P&L).
-- `getLatestCandleTime(symbol, timeframe)` → `SELECT max(open_time) ...` para el cursor del refresh.
-- `findUnresolvedEntries(mode)` / `findUnprotectedPositions(mode)` → finders del reconciler (status
-  `pending`/`pending_execution`; `protected=false`).
+  repo `fills.ts` solo tiene `insertFill`; el reconciler/monitor lo usan para P&L y para detectar fills
+  ya registrados — auxiliar, no es el ancla de idempotencia; ver FIX M2).
+- `getLatestOpenTime(symbol, timeframe)` → **ya existe** (`ohlcv-candles.ts:36`, devuelve `Date|null`);
+  el refresh la reusa como cursor (no es nueva).
+- `findUnresolvedEntries(mode)` → entradas `pending`/`pending_execution` **con filtro de frescura**
+  `AND created_at < now() - interval '5 minutes'` (FIX H1) y sin posición para su decisión.
+- `findUnprotectedPositions(mode)` → posiciones `status='open' AND protected=false`.
 
 Constantes nuevas en `src/lib/execution/limits.ts`:
 - `RECONCILE_INTERVAL_MS` (default p.ej. `5 * 60_000`).
@@ -213,6 +252,15 @@ Constantes nuevas en `src/lib/execution/limits.ts`:
 - **Notificación** best-effort (template, `notifyBestEffort`), separada de la ejecución — igual que hoy.
 - **Degradación OHLCV**: fallo de fetch de un símbolo audita y el refresh continúa; el scanner opera con
   las velas que tenga (REST autoritativo, §15.1 — una caída degrada, no bloquea).
+- **FIX M1 — moneda del fee en el P&L realizado.** `realizedPnl = (exit − entry)·qty − exitFee − entryFee`
+  (`execute-order-real.ts:146`, replicado en el monitor real) resta los fees como escalares en quote, pero
+  `order.fees[].cost` de ccxt puede venir en **base (BTC)** o **BNB** según cómo se cobró. En SP13 ese P&L
+  se persiste de **cierres reales** y alimenta el gate de drawdown (`getConsecutiveLosses`/
+  `getDailyRealizedPnl`) y el `shadow-report`, así que la moneda importa. **El plan debe**: (a) verificar
+  contra ccxt-binance testnet la forma real de `order.fee`/`order.fees` (campo `currency`), y (b) o bien
+  normalizar a quote (`feeBase·exitPrice`, `feeBNB·precioBNB`) o bien documentar y **asegurar** el supuesto
+  "fees en quote (USDT)" — p.ej. desactivar el descuento BNB en la cuenta de testnet. No dejar el supuesto
+  implícito.
 
 ## Cableado (worker)
 
@@ -226,12 +274,21 @@ Constantes nuevas en `src/lib/execution/limits.ts`:
 
 ## Verificación
 
+- **FIX H3 — verificación ccxt ANTES de codificar A.1 (linchpin).** Antes de comprometer el lookup por
+  `clientOrderId`, verificar contra el código real de `node_modules/ccxt` (binance spot) la firma exacta
+  del lookup por client-id (probable `fetchOrder(undefined, symbol, { clientOrderId })` → mapea a
+  `origClientOrderId`) y confirmar que el param unificado `clientOrderId` que manda `placeEntry` se
+  propaga a `newClientOrderId` en el `createOrder` de binance. Si el lookup directo no existe/funciona,
+  usar el **fallback** ya previsto: `fetchOpenOrders`/`fetchClosedOrders(symbol, since)` + match por
+  `clientOrderId` en `order.clientOrderId`/`order.info`. Esta verificación es el **primer paso** del plan,
+  no un detalle de implementación.
 - **Unit** (mock del cliente ccxt por cada caso de estado de orden): lógica de decisión del reconciler
-  (A.1/A.2, los ~6 desenlaces), `runMonitorTickReal` (leg llena / ambas abiertas / leg fallida),
-  `refreshOhlcv` (fetch+upsert, fallo por símbolo), `isSetupOccupied`, `clientOrderId` determinista en
-  `placeEntry`.
-- **Integración** (Postgres del compose): `getFillsForOrder`, `getLatestCandleTime`,
-  `findUnresolvedEntries`/`findUnprotectedPositions`, `isSetupOccupied`.
+  (A.1/A.2, los ~6 desenlaces, incl. el filtro de frescura H1), `runMonitorTickReal` (leg llena
+  close-first / ambas abiertas / ambas terminales sin fill → handoff M3), `refreshOhlcv` (fetch+upsert,
+  fallo por símbolo, `loadMarkets`), `isSetupOccupied` (bloquea con `pending_execution` fresca, **sin**
+  filtro de frescura), `clientOrderId` determinista en `placeEntry`.
+- **Integración** (Postgres del compose): `getFillsForOrder`, `findUnresolvedEntries` (verifica el filtro
+  de frescura), `findUnprotectedPositions`, `isSetupOccupied`.
 - **Smoke vigilado owner-gated** (fuera de CI): con `KAIROS_MODE=testnet`, validar contra Binance
   testnet real (a) que el reconciler resuelve una entrada/posición de prueba vía `fetchOrder`/
   `fetchOrderTrades`, y (b) que el monitor detecta el fill server-side del OCO y cierra con P&L real.
