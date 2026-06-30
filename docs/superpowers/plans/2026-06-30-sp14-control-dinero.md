@@ -484,6 +484,8 @@ describe('closePositionCommand — testnet', () => {
     const reply = await closePositionCommand('BTC/USDT', d);
     expect(d.cancelOco).toHaveBeenCalledWith(d.client, 'BTC/USDT', legs);          // cancel-first
     expect(d.emergencyClose).toHaveBeenCalledWith(d.client, { symbol: 'BTC/USDT', qty: 0.5 });
+    // fill de salida contra la leg (FK válida); en real recordClose recibe legs[0].id
+    expect(insertFill).toHaveBeenCalledWith({ orderId: 'sl-row', price: 110, qty: 0.5, fee: 0.06 });
     // realized = (110-100)*0.5 - 0.06 - 0.05 = 4.89
     expect(closeOpenPosition).toHaveBeenCalledWith('p1', expect.closeTo(4.89, 6), expect.any(Date));
     expect(closeBracketLegs).toHaveBeenCalledWith('d1', 'sl');
@@ -525,8 +527,7 @@ describe('closePositionCommand — sim', () => {
     const reply = await closePositionCommand('BTC/USDT', d as never);
     expect(d.cancelOco).not.toHaveBeenCalled();
     expect(d.emergencyClose).not.toHaveBeenCalled();
-    expect(closeOpenPosition).toHaveBeenCalled();   // cierra con P&L sintético
-    expect(insertFill).toHaveBeenCalled();
+    expect(closeOpenPosition).toHaveBeenCalled();   // cierra con P&L sintético (el fill se omite en sim — sin leg id)
     expect(reply).toContain('sim');
   });
 });
@@ -546,11 +547,11 @@ import { getBracketLegs, closeBracketLegs, type BracketLeg } from '../../db/repo
 import { insertFill } from '../../db/repositories/fills.ts';
 import { getLatestClosePrice } from '../../db/repositories/ohlcv-candles.ts';
 import { appendAuditLog } from '../../db/repositories/audit-log.ts';
-import { withSetupLock, NOT_ACQUIRED } from '../execution/setup-lock.ts';
+import { withSetupLock } from '../execution/setup-lock.ts';
 import { simulateFill } from '../execution/fill.ts';
 import { DEFAULT_SIM_PARAMS } from '../execution/limits.ts';
-import { cancelOco as defaultCancelOco, type CancelOcoClient } from '../execution/real-order/cancel-oco.ts';
-import type { EmergencyArgs, ExitResult } from '../execution/real-order/emergency-close.ts';
+import { type CancelOcoClient } from '../execution/real-order/cancel-oco.ts';
+import type { EmergencyClient, EmergencyArgs, ExitResult } from '../execution/real-order/emergency-close.ts';
 import type { RealClient } from '../execution/execute-order-real.ts';
 import type { OrderStateClient } from '../execution/real-order/order-state.ts';
 import type { TradingMode } from '../mode.ts';
@@ -559,7 +560,8 @@ export interface ClosePositionDeps {
   mode: TradingMode;
   client?: RealClient & OrderStateClient & CancelOcoClient;   // requerido en testnet|live
   cancelOco: (client: CancelOcoClient, symbol: string, legs: BracketLeg[]) => Promise<void>;
-  emergencyClose: (client: RealClient, a: EmergencyArgs) => Promise<ExitResult>;
+  // FIX M-TYPE-01: el tipo mínimo que el cierre necesita es EmergencyClient (RealClient lo extiende).
+  emergencyClose: (client: EmergencyClient, a: EmergencyArgs) => Promise<ExitResult>;
   withLock?: typeof withSetupLock;
 }
 
@@ -609,7 +611,10 @@ async function closeReal(symbol: string, deps: ClosePositionDeps): Promise<strin
     await recordClose(pos, exit.exitPrice, exit.exitFee, realized, legs[0]?.id);
     return `✅ ${symbol} cerrada @ ${exit.exitPrice.toFixed(2)} (pnl ${realized.toFixed(2)}).`;
   });
-  return result === NOT_ACQUIRED ? `${symbol}: otro proceso opera este setup — reintenta en unos segundos.` : result;
+  // Chequeo ESTRUCTURAL de NOT_ACQUIRED (L-COMPAT-01: consistente con execute-order-real.ts:120; un mock
+  // que devuelva {lock:'not_acquired'} distinto a la constante exportada también se detecta).
+  if ((result as { lock?: string }).lock === 'not_acquired') return `${symbol}: otro proceso opera este setup — reintenta en unos segundos.`;
+  return result as string;
 }
 
 // Cierre DB común: fill de salida (best-effort) + closeOpenPosition (ancla idempotente) + legs + audit.
@@ -739,20 +744,27 @@ export async function dispatchControl(intent: ControlIntent, deps: DispatchDeps)
 }
 ```
 
-- [ ] **Step 4: Corre, verifica verde**
+- [ ] **Step 4: Actualiza los dos callers con stubs (FIX M-TYPECHECK-01 — deja typecheck verde)**
 
-Run: `npm test -- src/lib/control/dispatch-control.test.ts`
-Expected: PASS. Si los tests existentes de SP11 construían `DispatchDeps` sin `closePosition`/`currentMode`, añádeselos (stub) para que tipen.
+`DispatchDeps` ahora exige `closePosition` y `currentMode`. Los dos callers existentes deben pasarlos
+para que el typecheck cierre en ESTA task (Task 7 los reemplaza por la implementación real):
+- `src/workflows/control-maker.ts` (la llamada a `dispatchControl`, ~línea 46): añade
+  `closePosition: async () => 'Para cerrar una posición usa /cierra <símbolo>.', currentMode: getMode(),`.
+- `src/channels/evolution.ts` (la llamada en `processControlMessage`, ~línea 65): añade
+  `closePosition: async () => 'Para cerrar una posición usa /cierra <símbolo>.', currentMode: getMode(),`.
+  (`getMode` ya está importado en ambos.)
 
-- [ ] **Step 5: typecheck**
+Si los tests existentes de SP11 construían `DispatchDeps` sin `closePosition`/`currentMode`, añádeselos (stub) para que tipen.
 
-Run: `npm run typecheck`
-Expected: sin errores (puede revelar callers de `dispatchControl` que faltan deps — se arreglan en Task 7).
+- [ ] **Step 5: Corre los tests + typecheck, verifica verde**
+
+Run: `npm test -- src/lib/control/dispatch-control.test.ts && npm run typecheck`
+Expected: dispatch tests PASS + **typecheck sin errores** (los callers ya pasan las deps stub).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/lib/control/dispatch-control.ts src/lib/control/dispatch-control.test.ts
+git add src/lib/control/dispatch-control.ts src/lib/control/dispatch-control.test.ts src/workflows/control-maker.ts src/channels/evolution.ts
 git commit -m "feat: dispatchControl casos /cierra y /modo + DispatchDeps (closePosition, currentMode) — SP14"
 ```
 
