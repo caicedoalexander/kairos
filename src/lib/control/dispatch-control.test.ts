@@ -1,4 +1,4 @@
-import { describe, test, expect, vi } from 'vitest';
+import { describe, it, test, expect, vi, beforeEach } from 'vitest';
 import { dispatchControl } from './dispatch-control.ts';
 import type { OpenPosition } from '../../db/repositories/positions.ts';
 
@@ -6,7 +6,13 @@ const POS = { id: 'p1', strategyId: 's1', symbol: 'BTC/USDT', side: 'long', entr
   sl: 63000, tp: 68000, mode: 'sim', openedAt: new Date('2026-06-29T00:00:00Z'), triggerTimeframe: '15m', decisionId: 'd1', entryFee: 0 } as unknown as OpenPosition;
 
 function deps(over: Record<string, unknown> = {}) {
-  return { getOpenPositions: async () => [POS], setPaused: vi.fn(async () => {}), ...over } as Parameters<typeof dispatchControl>[1];
+  return {
+    getOpenPositions: async () => [POS],
+    setPaused: vi.fn(async () => {}),
+    closePosition: vi.fn(async () => 'ok'),
+    currentMode: 'sim' as const,
+    ...over,
+  } as Parameters<typeof dispatchControl>[1];
 }
 
 describe('dispatchControl', () => {
@@ -34,5 +40,33 @@ describe('dispatchControl', () => {
   test('unknown: texto de ayuda con los comandos', async () => {
     const reply = await dispatchControl({ command: 'unknown' }, deps());
     expect(reply.toLowerCase()).toContain('/estado');
+  });
+});
+
+describe('dispatchControl cierra/modo', () => {
+  const baseDeps = {
+    getOpenPositions: vi.fn(async () => []),
+    setPaused: vi.fn(async () => {}),
+    closePosition: vi.fn(async () => '✅ BTC/USDT cerrada @ 110 (pnl 4.89).'),
+    currentMode: 'testnet' as const,
+  };
+
+  beforeEach(() => vi.clearAllMocks());
+
+  it('cierra con símbolo → llama closePosition y devuelve su reply', async () => {
+    const reply = await dispatchControl({ command: 'cierra', symbol: 'BTC/USDT' }, baseDeps);
+    expect(baseDeps.closePosition).toHaveBeenCalledWith('BTC/USDT');
+    expect(reply).toContain('cerrada');
+  });
+
+  it('cierra SIN símbolo → ayuda (no llama closePosition)', async () => {
+    const reply = await dispatchControl({ command: 'cierra' }, baseDeps);
+    expect(baseDeps.closePosition).not.toHaveBeenCalled();
+    expect(reply).toMatch(/\/cierra/);
+  });
+
+  it('modo → reporta el modo actual', async () => {
+    const reply = await dispatchControl({ command: 'modo' }, baseDeps);
+    expect(reply).toContain('testnet');
   });
 });

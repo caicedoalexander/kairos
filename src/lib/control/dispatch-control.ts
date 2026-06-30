@@ -1,12 +1,15 @@
 import type { ControlIntent } from './control-intent-schema.ts';
 import type { OpenPosition } from '../../db/repositories/positions.ts';
+import type { TradingMode } from '../mode.ts';
 
 export interface DispatchDeps {
   getOpenPositions: () => Promise<OpenPosition[]>;
   setPaused: (paused: boolean) => Promise<void>;
+  closePosition: (symbol: string) => Promise<string>;
+  currentMode: TradingMode;
 }
 
-const AYUDA = 'Comandos: /estado · /pausa · /reanuda. (cerrar posiciones y cambiar de modo llegan en testnet)';
+const AYUDA = 'Comandos: /estado · /pausa · /reanuda · /cierra <símbolo> · /modo.';
 
 function renderEstado(positions: OpenPosition[]): string {
   if (positions.length === 0) return 'Estado: sin posiciones abiertas.';
@@ -14,8 +17,8 @@ function renderEstado(positions: OpenPosition[]): string {
   return `Estado: ${positions.length} posición(es) abierta(s):\n${lineas.join('\n')}`;
 }
 
-// Ejecuta el comando (DETERMINISTA) y devuelve el texto de respuesta. SP11: solo comandos seguros
-// (read + kill-switch). El LLM no llega aquí: solo clasificó la intención.
+// Ejecuta el comando (DETERMINISTA) y devuelve el texto de respuesta. El LLM no llega aquí: solo
+// clasificó la intención (y nunca a 'cierra' — ése solo lo produce el slash).
 export async function dispatchControl(intent: ControlIntent, deps: DispatchDeps): Promise<string> {
   switch (intent.command) {
     case 'estado':
@@ -26,6 +29,11 @@ export async function dispatchControl(intent: ControlIntent, deps: DispatchDeps)
     case 'reanuda':
       await deps.setPaused(false);
       return '▶️ Bot reanudado.';
+    case 'cierra':
+      if (!intent.symbol) return `Uso: /cierra <símbolo>. Ej: /cierra BTC/USDT.`;
+      return deps.closePosition(intent.symbol);
+    case 'modo':
+      return `Modo actual: ${deps.currentMode}. (conmutar requiere reiniciar con KAIROS_MODE=…; la conmutación en caliente llega en un sprint propio).`;
     default:
       return AYUDA;
   }

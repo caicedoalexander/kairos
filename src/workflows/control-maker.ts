@@ -47,7 +47,13 @@ export default defineWorkflow({
       } catch { /* best-effort */ }
     }
     // H-1: getOpenPositions exige `mode`; se envuelve con getMode() para satisfacer DispatchDeps.
-    const reply = await dispatchControl(intent, { getOpenPositions: () => getOpenPositions(getMode()), setPaused });
+    // closePosition: stub — el LLM nunca emite 'cierra' (Task 7 lo reemplaza en evolution.ts).
+    const reply = await dispatchControl(intent, {
+      getOpenPositions: () => getOpenPositions(getMode()),
+      setPaused,
+      closePosition: async () => 'Para cerrar una posición usa /cierra <símbolo>.',
+      currentMode: getMode(),
+    });
     try {
       await sendWhatsApp(reply, input.sender);
     } catch { /* best-effort: el control no tumba nada si Evolution falla */ }

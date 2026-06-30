@@ -63,7 +63,13 @@ export async function processControlMessage(
   const slash = parseSlashCommand(text);
   if (slash) {
     // H-1: getOpenPositions exige `mode`; se envuelve con getMode().
-    const replyText = await route.dispatch(slash, { getOpenPositions: () => getOpenPositions(getMode()), setPaused });
+    // closePosition/currentMode: Task 7 reemplazará closePosition con la impl real.
+    const replyText = await route.dispatch(slash, {
+      getOpenPositions: () => getOpenPositions(getMode()),
+      setPaused,
+      closePosition: async () => 'Para cerrar una posición usa /cierra <símbolo>.',
+      currentMode: getMode(),
+    });
     await route.reply(replyText, sender);
   } else {
     await route.invoke(text, sender); // texto libre → control-maker (Haiku)
