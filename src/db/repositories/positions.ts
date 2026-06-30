@@ -203,3 +203,15 @@ export async function getProtectedOpenPositions(mode: TradingMode, exec: Executo
   );
   return rows.map(mapReconcilePosition);
 }
+
+// SP14: posición abierta por símbolo+modo SIN los filtros del monitor (getOpenPositions exige sl/tp NOT
+// NULL + trigger-TF, lo que ocultaría posiciones cerrables). Para /cierra. Si hay >1, la más reciente.
+export async function getOpenPositionBySymbol(symbol: string, mode: TradingMode, exec: Executor = query): Promise<ReconcilePosition | null> {
+  const rows = await exec<ReconcilePositionRow>(
+    `SELECT id, symbol, strategy_id, decision_id, entry, size, sl, tp, entry_fee
+       FROM kairos.positions WHERE status = 'open' AND mode = $1 AND symbol = $2
+      ORDER BY opened_at DESC LIMIT 1`,
+    [mode, symbol],
+  );
+  return rows[0] ? mapReconcilePosition(rows[0]) : null;
+}

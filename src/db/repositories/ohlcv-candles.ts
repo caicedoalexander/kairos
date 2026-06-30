@@ -62,6 +62,15 @@ export async function getClosedCandlesAfter(
     o: Number(r.o), h: Number(r.h), l: Number(r.l), c: Number(r.c), v: Number(r.v) }));
 }
 
+// SP14: último precio de cierre almacenado para un símbolo (cualquier TF), para el cierre /cierra en sim.
+export async function getLatestClosePrice(symbol: string): Promise<number | null> {
+  const rows = await query<{ c: string }>(
+    `SELECT c FROM kairos.ohlcv_candles WHERE symbol = $1 ORDER BY open_time DESC LIMIT 1`,
+    [symbol],
+  );
+  return rows[0] ? Number(rows[0].c) : null;
+}
+
 export async function getCandles(
   symbol: string, timeframe: string, from: Date, to: Date,
 ): Promise<OhlcvRow[]> {
