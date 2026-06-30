@@ -1,11 +1,11 @@
 # Pendientes — tras cerrar Fase 2 (sombra)
 
-> Estado: **Fase 2 COMPLETA en `sim`/sombra** (SP7→SP11). El loop razona end-to-end —
-> decision-maker LLM + analista técnico + analista fundamental condicional + escalación Sonnet→Opus +
-> risk-policy + medición A/B + control WhatsApp inbound — todo **sin tocar dinero** (el LLM juzga, el
-> código determinista ejecuta). Siguiente hito: **testnet**.
+> Estado: **Fases 1, 2 y 3 (en código) COMPLETAS** (SP7→SP13). El loop razona end-to-end y el
+> ejecutor real + reconciler ccxt + monitor real + frescura OHLCV están implementados y testados
+> (suite 381/381). El LLM sigue en sombra. **Pendiente inmediato:** smoke vigilado owner-gated de
+> SP13 (owner-gated, contra Binance testnet real). Luego SP14 (`/cierra`, `/modo`) y trailing.
 >
-> Fecha de corte: 2026-06-29. `main` está **97 commits por delante de `origin`** (sin push).
+> Fecha de corte: 2026-06-29. `main` está **varios commits por delante de `origin`** (sin push).
 
 ---
 
@@ -33,6 +33,11 @@
 - **SP7 shadow worker end-to-end** (cola `shadow-eval` viva): el decision-maker se validó con `flue run`;
   el flujo completo `scan-tick → evaluate-worker → enqueue shadow → shadow-worker → invoke` no se corrió
   end-to-end en vivo (cuesta el primer gasto continuo). Opcional antes de testnet.
+- **SP13 reconciler/monitor ccxt** (bloqueante para loop continuo): con `KAIROS_MODE=testnet` y el worker
+  vivo, verificar contra Binance testnet real: (H3) `fetchOrder(undefined, symbol, { clientOrderId })` recupera
+  la entrada por signalId; reconciler re-protege una posición `protected=false`; monitor detecta fill del
+  OCO y cierra con P&L real; `ohlcv_candles.max(open_time)` avanza sin intervención. Sin este smoke,
+  el loop testnet continuo desatendido **no debe habilitarse**.
 
 ### 1.3 Push a `origin`
 
@@ -40,23 +45,29 @@
 
 ---
 
-## 2. Diferido a **testnet** (decisión consciente, no deuda silenciosa)
+## 2. Diferido a **testnet** — estado post-SP13
 
-Estos ítems necesitan el plumbing de órdenes real (no `sim`) y guardrails de modo; van con el salto a
-testnet, no antes:
+Los siguientes ítems han sido implementados en testnet (SP12+SP13) y **ya no son deuda**:
 
-- **OCO residente en el exchange** (SL/TP inmediato real, no polling por cierre de vela).
-- **Lock Redis por candidato** (claim antes de tocar el exchange, §273).
-- **Reconciler con `fetch` de ccxt** (diff exchange↔DB real al arranque).
-- **Mantener `kairos.ohlcv_candles` al día** (cadencia de backfill ≤ `MONITOR_INTERVAL_MS`).
+- ✅ **OCO residente en el exchange** — SP12.
+- ✅ **Lock Redis por candidato** — SP12 (`withSetupLock`).
+- ✅ **Reconciler con `fetch` de ccxt** — SP13 (`runExchangeReconcile`, A.1 + A.2).
+- ✅ **Mantener `kairos.ohlcv_candles` al día** — SP13 (`src/lib/market-data/refresh.ts`, job 1 min).
+- ✅ **Gate setup-aware** (cierra I1 por seguridad) — SP13 (`isSetupOccupied`).
+- ✅ **`clientOrderId` determinista** para entradas inciertas — SP13.
+- ✅ **Monitor de cierres reales** (close-first idempotente, P&L de fills reales) — SP13.
+
+**Pendientes aún diferidos:**
+
 - **Comandos de control que tocan dinero** (SP11 los difirió): `/cierra <symbol>` (`close_position`
   idempotente) y `/modo <sim|testnet|live>` (conmuta modo, muy sensible — podría ir a live). Se añaden
-  al picklist `ControlIntent` + un handler determinista cuando exista el plumbing real.
+  al picklist `ControlIntent` + un handler determinista → **SP14**.
+- **Trailing stop** (ajuste dinámico del SL tras moves favorables) — sprint propio (no es SP14).
 - **Kill-switch con copia caliente en Redis** (`kairos:killswitch`, ARCHITECTURE §276): hoy `bot_state`
-  vive solo en Postgres (suficiente en `sim`, un proceso). En testnet, si scanner y control corren en
-  procesos distintos, la copia Redis reduce latencia.
+  vive solo en Postgres (suficiente para un proceso). En testnet con procesos separados, la copia Redis
+  reduce latencia — candidato a SP14 o limpieza.
 - **Dedup de mensajes inbound** del control (idempotencia por `key.id`): hoy aceptado (los comandos son
-  idempotentes); una redelivery de Evolution re-invoca el LLM y re-responde (costo, no dinero).
+  idempotentes); una redelivery de Evolution re-invoca el LLM y re-responde (costo, no dinero) — candidato a SP14.
 
 ---
 

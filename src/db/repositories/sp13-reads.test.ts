@@ -1,17 +1,22 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { query } from '../pool.ts';
+import { pool } from '../pool.ts';
 import { ulid } from 'ulidx';
 import { getFillsForOrder } from './fills.ts';
 import { findUnresolvedEntries, hasUnresolvedEntryForSetup, getBracketLegs } from './orders.ts';
 import { findUnprotectedPositions, getProtectedOpenPositions } from './positions.ts';
 
+// ID fijo para la estrategia de prueba: evita contaminar kairos.strategies con ULIDs acumulados.
+const TEST_STRATEGY_ID = 'sp13-reads-test-strategy';
+
 // Helpers mínimos para sembrar el grafo strategy→signal→decision→order/position.
 async function seedStrategy(): Promise<string> {
-  const id = ulid();
   // FIX H-1 (plan-review): kairos.strategies NO tiene columna `name`; `timeframe` es NOT NULL.
+  // enabled=false: no contamina getEnabledStrategies (que parseará trigger_config).
   await query(`INSERT INTO kairos.strategies (id, enabled, timeframe, trigger_config, risk_params)
-               VALUES ($1, true, '15m', '{}'::jsonb, '{}'::jsonb)`, [id]);
-  return id;
+               VALUES ($1, false, '15m', '{}'::jsonb, '{}'::jsonb)
+               ON CONFLICT (id) DO NOTHING`, [TEST_STRATEGY_ID]);
+  return TEST_STRATEGY_ID;
 }
 async function seedSignal(strategyId: string, symbol: string): Promise<string> {
   const id = ulid();
@@ -26,10 +31,42 @@ async function seedDecision(signalId: string): Promise<string> {
 
 describe('SP13 reads (integración)', () => {
   beforeEach(async () => {
-    // Aísla: limpia el grafo de prueba. (Sigue el patrón de aislamiento de los tests de integración existentes.)
-    await query(`DELETE FROM kairos.fills WHERE order_id IN (SELECT id FROM kairos.orders WHERE mode = 'testnet')`);
-    await query(`DELETE FROM kairos.orders WHERE mode = 'testnet'`);
-    await query(`DELETE FROM kairos.positions WHERE mode = 'testnet'`);
+    // Aísla: limpia SOLO los datos de esta estrategia de prueba (scoped por strategy_id)
+    // para no interferir con otros test files que corren en paralelo y usan mode='testnet'.
+    await query(`DELETE FROM kairos.fills WHERE order_id IN (
+      SELECT o.id FROM kairos.orders o
+      JOIN kairos.decisions d ON d.id = o.decision_id
+      JOIN kairos.signals s ON s.id = d.signal_id
+      WHERE s.strategy_id = $1 AND o.mode = 'testnet'
+    )`, [TEST_STRATEGY_ID]);
+    await query(`DELETE FROM kairos.orders WHERE mode = 'testnet' AND decision_id IN (
+      SELECT d.id FROM kairos.decisions d
+      JOIN kairos.signals s ON s.id = d.signal_id
+      WHERE s.strategy_id = $1
+    )`, [TEST_STRATEGY_ID]);
+    await query(`DELETE FROM kairos.positions WHERE strategy_id = $1 AND mode = 'testnet'`, [TEST_STRATEGY_ID]);
+    await query(`DELETE FROM kairos.decisions WHERE signal_id IN (SELECT id FROM kairos.signals WHERE strategy_id = $1)`, [TEST_STRATEGY_ID]);
+    await query(`DELETE FROM kairos.signals WHERE strategy_id = $1`, [TEST_STRATEGY_ID]);
+  });
+
+  afterAll(async () => {
+    // Limpieza final: elimina el grafo completo (el last test puede haber dejado datos).
+    await query(`DELETE FROM kairos.fills WHERE order_id IN (
+      SELECT o.id FROM kairos.orders o
+      JOIN kairos.decisions d ON d.id = o.decision_id
+      JOIN kairos.signals s ON s.id = d.signal_id
+      WHERE s.strategy_id = $1 AND o.mode = 'testnet'
+    )`, [TEST_STRATEGY_ID]);
+    await query(`DELETE FROM kairos.orders WHERE mode = 'testnet' AND decision_id IN (
+      SELECT d.id FROM kairos.decisions d
+      JOIN kairos.signals s ON s.id = d.signal_id
+      WHERE s.strategy_id = $1
+    )`, [TEST_STRATEGY_ID]);
+    await query(`DELETE FROM kairos.positions WHERE strategy_id = $1 AND mode = 'testnet'`, [TEST_STRATEGY_ID]);
+    await query(`DELETE FROM kairos.decisions WHERE signal_id IN (SELECT id FROM kairos.signals WHERE strategy_id = $1)`, [TEST_STRATEGY_ID]);
+    await query(`DELETE FROM kairos.signals WHERE strategy_id = $1`, [TEST_STRATEGY_ID]);
+    await query(`DELETE FROM kairos.strategies WHERE id = $1`, [TEST_STRATEGY_ID]);
+    await pool.end();
   });
 
   it('getFillsForOrder devuelve los fills de la orden', async () => {
@@ -98,7 +135,9 @@ describe('SP13 reads (integración)', () => {
     const sig2 = await seedSignal(s, 'ETH/USDT'); const d2 = await seedDecision(sig2);
     await query(`INSERT INTO kairos.positions (id, symbol, side, entry, size, sl, tp, status, strategy_id, mode, decision_id, protected)
                  VALUES ($1, 'ETH/USDT', 'long', 50, 1, 47, 56, 'open', $2, 'testnet', $3, true)`, [ulid(), s, d2]);
-    expect((await findUnprotectedPositions('testnet')).map((p) => p.symbol)).toEqual(['BTC/USDT']);
-    expect((await getProtectedOpenPositions('testnet')).map((p) => p.symbol)).toEqual(['ETH/USDT']);
+    // Filtra por strategyId para aislar de otras pruebas concurrentes que también crean posiciones en testnet.
+    const mine = (p: { strategyId: string }) => p.strategyId === s;
+    expect((await findUnprotectedPositions('testnet')).filter(mine).map((p) => p.symbol)).toEqual(['BTC/USDT']);
+    expect((await getProtectedOpenPositions('testnet')).filter(mine).map((p) => p.symbol)).toEqual(['ETH/USDT']);
   });
 });

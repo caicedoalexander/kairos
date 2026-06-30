@@ -104,13 +104,33 @@ Progreso por sprints (SP):
   `docs/superpowers/plans/2026-06-29-sp12-ejecutor-real-testnet.md`. **Gate: sólo smoke vigilado; el
   loop continuo desatendido se habilita en SP13** (ver precondición dura I1 en el spec §Seguridad:
   doble-compra secuencial tras fill incierto — no habilitar el loop sin el reconciler ccxt).
+- **SP13 (hecho) — reconciler/monitor ccxt + frescura OHLCV (cierra Fase 3 en código):**
+  (1) **Reconciler ccxt** (`src/lib/reconcile/exchange-reconcile.ts`, `runExchangeReconcile`): corre en
+  arranque + tick periódico (5 min) en modo real. **A.1** resuelve entradas inciertas
+  (`pending`/`pending_execution`) contra el exchange por `clientOrderId` — si llenada: abre posición,
+  registra fill real y re-protege (OCO); si no llenada: cancela. **A.2** reconcilia posiciones
+  desprotegidas (`protected=false`) — si OCO vivo: `protected=true`; si cerrada: P&L real desde fills;
+  si sin OCO: re-protege o aplana. Cierra la **precondición dura I1** (doble-compra por fill incierto).
+  (2) **Monitor de cierres reales** (`src/lib/monitor/monitor-real.ts`, `runMonitorTickReal`): detecta
+  fill server-side del OCO por polling REST; cierre **close-first idempotente** (cierra posición en DB
+  antes de insertar fill → protege ante doble tick); calcula P&L desde fills reales; handoff M3 al
+  reconciler si el OCO muere. (3) **Frescura OHLCV** (`src/lib/market-data/refresh.ts`): job repetible
+  (cadencia 1 min, configurable `OHLCV_REFRESH_INTERVAL_MS`) que mantiene `ohlcv_candles` al día con
+  cliente ccxt público. (4) **Gate setup-aware** (`isSetupOccupied`, `src/lib/execution/setup-occupied.ts`):
+  cuenta entradas sin resolver (`pending`/`pending_execution`) como ocupado, además de posición abierta —
+  cierra I1 **por seguridad**, independiente de la cadencia del reconciler. (5) **`clientOrderId`
+  determinista** (= `signalId`) en `placeEntry`, que habilita la búsqueda de entradas inciertas por ccxt.
+  El LLM **sigue en sombra**. Suite **381/381** verde. El **smoke vigilado en testnet** (valida las
+  llamadas ccxt reales: `fetchOrder` por `clientOrderId`, `fetchOrderTrades`, cierre con P&L real, frescura
+  de `ohlcv_candles`) queda **owner-gated, pendiente**. Plan en
+  `docs/superpowers/plans/2026-06-29-sp13-reconciler-monitor-ccxt.md`.
+  **🎉 FASE 3 COMPLETA EN CÓDIGO.** El loop testnet continuo desatendido puede habilitarse tras
+  el smoke vigilado. Queda: SP14 (`/cierra`, `/modo`), trailing (sprint propio), Fase 4 (live).
 
-> Pendientes antes del **loop testnet continuo** (lo que falta de Fase 3, → SP13): monitor que detecta
-> cierres reales vía ccxt + P&L desde fills reales + trailing; **reconciler de arranque con `fetch` de
-> ccxt** (reconcilia `pending`/`pending_execution`/`protected=false` contra el exchange **antes** de que
-> el scanner dispare — cierra el hueco de doble-compra I1); mantener `kairos.ohlcv_candles` al día
-> (cadencia ≤ `MONITOR_INTERVAL_MS`). Y luego SP14: `/cierra` y `/modo` (control que toca dinero).
-> Hecho en SP12: ejecutor real, OCO residente, lock Redis por setup.
+> Pendientes antes del **loop testnet continuo**: únicamente el **smoke vigilado owner-gated de SP13**
+> (valida llamadas ccxt reales contra Binance testnet). Todo lo demás de Fase 3 está implementado.
+> Luego SP14 (`/cierra` y `/modo`) y trailing (sprint propio). Hecho en SP13: reconciler ccxt, monitor
+> real close-first, frescura OHLCV, gate setup-aware, clientOrderId determinista.
 
 > Nota: `evaluate-candidate` es una **función de orquestación** dirigida por código (no
 > `defineWorkflow` descubierto) — el camino del dinero es determinista, no un workflow LLM. Vive en
@@ -220,7 +240,7 @@ Restricciones de Flue que **moldearon el diseño** (no las re-litigues sin relee
 - **`src/db.ts`** exporta por default el adapter `postgres(process.env.DATABASE_URL!)` (store
   de Flue). Los datos de dominio van por repositorios propios al esquema `kairos`, append-first.
 - **Subagentes** declarados como profiles en `subagents:[]` y delegados con `session.task`.
-- **Reconciliación exchange↔DB al arranque** antes de que el scanner dispare (pendiente, SP6).
+- **Reconciliación exchange↔DB al arranque** antes de que el scanner dispare (`runExchangeReconcile`, SP13, modo real).
 - **La notificación es best-effort**: un fallo de `notify` (Evolution caído/mal configurado) se
   audita (`notify_failed`) y **nunca** propaga ni tumba el job tras ejecutar — la capa de
   notificación está separada de la de ejecución (`notifyBestEffort` en `evaluate-candidate.ts`).
@@ -249,12 +269,10 @@ razonamiento (sigue en `sim` para medir edge) → **testnet** (plumbing real de 
 sim; no toques dinero real antes de validar en sim y testnet. Dashboard, futures, shorts y
 multi-exchange están **fuera de alcance** por ahora (no los construyas — YAGNI).
 
-**Dónde estamos:** Fase 1 (loop determinista en `sim`) y Fase 2 (razonamiento LLM en sombra)
-**completas**. **Fase 3 (testnet) arrancó con SP12**: el **ejecutor real** está cableado — `testnet`
-coloca entrada real + OCO residente server-side con idempotencia (lock por setup + `UNIQUE`) y
-compensación (cierre de emergencia), todo determinista (el LLM sigue en sombra). Suite 347/347.
-**Pendiente inmediato:** el **smoke vigilado en testnet** (owner-gated) que valida la llamada OCO real
-de Binance — hasta correrlo, el plumbing real no está confirmado end-to-end. **Siguiente sub-proyecto
-(SP13):** reconciler/monitor con ccxt + ohlcv al día → recién ahí se habilita el **loop testnet
-continuo desatendido** (la precondición dura I1 lo bloquea hasta entonces). Luego SP14 (`/cierra`,
-`/modo`) y Fase 4 (**live**, poco capital).
+**Dónde estamos:** Fases 1, 2 y **3 (en código) completas**. **SP13 cierra Fase 3 en código**: el
+reconciler ccxt, monitor real, frescura OHLCV y gate setup-aware están implementados y testados
+(suite **381/381**). El LLM **sigue en sombra**. **Pendiente inmediato (owner-gated):** el **smoke
+vigilado de SP13** — correr contra Binance testnet para confirmar `fetchOrder` por `clientOrderId`,
+fills reales, P&L, re-protección del OCO y frescura de `ohlcv_candles`; hasta correrlo, el loop
+testnet continuo desatendido no se habilita. **Luego:** SP14 (`/cierra`, `/modo` — control que
+toca dinero), trailing (sprint propio) y Fase 4 (**live**, poco capital).

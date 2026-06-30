@@ -24,5 +24,15 @@ export async function getStrategy(id: string): Promise<Strategy | null> {
 
 export async function getEnabledStrategies(): Promise<Strategy[]> {
   const rows = await query<StrategyRow>(`${SELECT} WHERE enabled = true`, []);
-  return rows.map(toStrategy);
+  const result: Strategy[] = [];
+  for (const r of rows) {
+    try {
+      result.push(toStrategy(r));
+    } catch {
+      // Estrategia con trigger_config inválido: se omite para no tumbar el scanner.
+      // El problema debe corregirse en la DB; aquí solo protegemos el loop principal.
+      console.warn(`[strategies] Estrategia ${r.id} omitida: trigger_config inválido.`);
+    }
+  }
+  return result;
 }
