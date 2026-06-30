@@ -1,9 +1,9 @@
-import { findUnresolvedEntries, updateOrderStatus, setOrderExchangeId, insertBracketLeg, type UnresolvedEntry } from '../../db/repositories/orders.ts';
-import { openPosition, setPositionProtected } from '../../db/repositories/positions.ts';
+import { findUnresolvedEntries, updateOrderStatus, setOrderExchangeId, insertBracketLeg, getBracketLegs, closeBracketLegs, type UnresolvedEntry, type BracketLeg } from '../../db/repositories/orders.ts';
+import { openPosition, setPositionProtected, findUnprotectedPositions, closeOpenPosition, type ReconcilePosition } from '../../db/repositories/positions.ts';
 import { insertFill } from '../../db/repositories/fills.ts';
 import { getDecisionVerdict } from '../../db/repositories/decisions.ts';
 import { appendAuditLog } from '../../db/repositories/audit-log.ts';
-import { fetchEntryState, type OrderStateClient } from '../execution/real-order/order-state.ts';
+import { fetchEntryState, fetchLegState, fetchExitFromTrades, type OrderStateClient } from '../execution/real-order/order-state.ts';
 import type { RealClient } from '../execution/execute-order-real.ts';
 import type { PlaceOcoArgs, OcoResult } from '../execution/real-order/place-oco.ts';
 import type { EmergencyArgs, ExitResult } from '../execution/real-order/emergency-close.ts';
@@ -57,4 +57,65 @@ async function reconcileOneEntry(deps: ReconcileDepsReal, e: UnresolvedEntry): P
 function msg(err: unknown): string { return err instanceof Error ? err.message : String(err); }
 async function safeAudit(eventType: string, payload: Record<string, unknown>): Promise<void> {
   try { await appendAuditLog({ eventType, actor: 'reconciler', payload }); } catch { /* último recurso */ }
+}
+
+// A.2 — reconcilia posiciones abiertas desprotegidas. Best-effort por ítem.
+export async function reconcileUnprotectedPositions(deps: ReconcileDepsReal): Promise<{ resolved: number }> {
+  const positions = await findUnprotectedPositions(deps.mode);
+  let resolved = 0;
+  for (const p of positions) {
+    try { if (await reconcileOnePosition(deps, p)) resolved++; }
+    catch (err) { await safeAudit('reconcile_position_error', { positionId: p.id, error: msg(err) }); }
+  }
+  return { resolved };
+}
+
+async function reconcileOnePosition(deps: ReconcileDepsReal, p: ReconcilePosition): Promise<boolean> {
+  const legs = (await getBracketLegs(p.decisionId ?? '')).filter((l) => l.exchangeOrderId);
+  const states = await Promise.all(legs.map(async (l) => ({ leg: l, st: await fetchLegState(deps.client, p.symbol, l.exchangeOrderId as string) })));
+  const filled = states.find((s) => s.st.filled > 0 && (s.st.status === 'closed' || s.st.status === 'filled'));
+  if (filled) return closePositionFromExchange(deps, p, filled.leg);
+  const liveLegs = states.some((s) => s.st.status === 'open');
+  if (liveLegs) {
+    // OCO vivo: el crash fue antes del flip de protected
+    await setPositionProtected(p.id, true);
+    await appendAuditLog({ eventType: 'reconcile_reprotected_noop', actor: 'reconciler', payload: { positionId: p.id } });
+    return true;
+  }
+  return reprotectOrFlatten(deps, p); // sin OCO vivo → re-protege o aplana
+}
+
+async function closePositionFromExchange(deps: ReconcileDepsReal, p: ReconcilePosition, leg: BracketLeg): Promise<boolean> {
+  const exit = await fetchExitFromTrades(deps.client, p.symbol, leg.exchangeOrderId as string);
+  const realized = (exit.exitPrice - p.entry) * p.size - exit.exitFee - p.entryFee;
+  const closed = await closeOpenPosition(p.id, realized, new Date());
+  if (closed && p.decisionId) await closeBracketLegs(p.decisionId, leg.purpose);
+  await appendAuditLog({ eventType: 'reconcile_position_closed', actor: 'reconciler', payload: { positionId: p.id, realized } });
+  return closed;
+}
+
+async function reprotectOrFlatten(deps: ReconcileDepsReal, p: ReconcilePosition): Promise<boolean> {
+  try {
+    const oco = await deps.placeOco(deps.client, { symbol: p.symbol, qty: p.size, sl: p.sl, tp: p.tp });
+    if (p.decisionId) {
+      await insertBracketLeg({ idempotencyKey: `${p.id}:sl`, decisionId: p.decisionId, size: p.size, purpose: 'sl', parentId: p.id, mode: deps.mode, exchangeOrderId: oco.slOrderId });
+      await insertBracketLeg({ idempotencyKey: `${p.id}:tp`, decisionId: p.decisionId, size: p.size, purpose: 'tp', parentId: p.id, mode: deps.mode, exchangeOrderId: oco.tpOrderId });
+    }
+    await setPositionProtected(p.id, true);
+    await appendAuditLog({ eventType: 'reconcile_reprotected', actor: 'reconciler', payload: { positionId: p.id, orderListId: oco.orderListId } });
+    return true;
+  } catch {
+    const exit = await deps.emergencyClose(deps.client, { symbol: p.symbol, qty: p.size });
+    const realized = (exit.exitPrice - p.entry) * p.size - exit.exitFee - p.entryFee;
+    const closed = await closeOpenPosition(p.id, realized, new Date());
+    await appendAuditLog({ eventType: 'reconcile_reprotect_emergency', actor: 'reconciler', payload: { positionId: p.id, realized } });
+    return closed;
+  }
+}
+
+// Orquestador: A.1 (entradas) + A.2 (posiciones). Arranque y tick periódico llaman esto.
+export async function runExchangeReconcile(deps: ReconcileDepsReal): Promise<{ entries: number; positions: number }> {
+  const a1 = await reconcileUnresolvedEntries(deps);
+  const a2 = await reconcileUnprotectedPositions(deps);
+  return { entries: a1.resolved, positions: a2.resolved };
 }
