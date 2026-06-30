@@ -13,7 +13,7 @@ vi.mock('../../db/repositories/decisions.ts', () => ({ getDecisionVerdict: vi.fn
 vi.mock('../../db/repositories/audit-log.ts', () => ({ appendAuditLog: vi.fn() }));
 vi.mock('../execution/real-order/order-state.ts', () => ({ fetchEntryState: vi.fn(), fetchExitFromTrades: vi.fn(), fetchLegState: vi.fn() }));
 
-import { findUnresolvedEntries, updateOrderStatus, setOrderExchangeId } from '../../db/repositories/orders.ts';
+import { findUnresolvedEntries, updateOrderStatus, setOrderExchangeId, insertBracketLeg } from '../../db/repositories/orders.ts';
 import { getBracketLegs, closeBracketLegs } from '../../db/repositories/orders.ts';
 import { openPosition, setPositionProtected } from '../../db/repositories/positions.ts';
 import { findUnprotectedPositions, closeOpenPosition } from '../../db/repositories/positions.ts';
@@ -112,6 +112,23 @@ describe('reconcileUnprotectedPositions', () => {
     const d = deps();
     await reconcileUnprotectedPositions(d);
     expect(d.placeOco).toHaveBeenCalledWith(d.client, expect.objectContaining({ symbol: 'BTC/USDT', qty: 0.5, sl: 95, tp: 110 }));
+    expect(setPositionProtected).toHaveBeenCalledWith('p1', true);
+  });
+
+  it('re-protege actualizando las legs EN SITIO (no inserta duplicados) cuando ya existen', async () => {
+    vi.mocked(findUnprotectedPositions).mockResolvedValue([basePos]);
+    // 2 legs existentes (viejas, exchangeOrderId no-null) — reconcileOnePosition las filtra y pasa
+    vi.mocked(getBracketLegs).mockResolvedValue([
+      { id: 'sl-row', purpose: 'sl', exchangeOrderId: 'OLD-SL', status: 'canceled' },
+      { id: 'tp-row', purpose: 'tp', exchangeOrderId: 'OLD-TP', status: 'canceled' },
+    ]);
+    vi.mocked(fetchLegState).mockResolvedValue({ status: 'canceled', filled: 0 }); // OCO muerto → reprotege
+    const d = deps();
+    await reconcileUnprotectedPositions(d);
+    expect(d.placeOco).toHaveBeenCalled();
+    expect(setOrderExchangeId).toHaveBeenCalledWith('sl-row', 'SL');  // del oco mock {slOrderId:'SL', tpOrderId:'TP'}
+    expect(setOrderExchangeId).toHaveBeenCalledWith('tp-row', 'TP');
+    expect(insertBracketLeg).not.toHaveBeenCalled(); // NO inserta duplicados
     expect(setPositionProtected).toHaveBeenCalledWith('p1', true);
   });
 

@@ -94,7 +94,7 @@ async function reconcileOnePosition(deps: ReconcileDepsReal, p: ReconcilePositio
     await appendAuditLog({ eventType: 'reconcile_reprotected_noop', actor: 'reconciler', payload: { positionId: p.id } });
     return true;
   }
-  return reprotectOrFlatten(deps, p); // sin OCO vivo → re-protege o aplana
+  return reprotectOrFlatten(deps, p, legs); // sin OCO vivo → re-protege o aplana
 }
 
 async function closePositionFromExchange(deps: ReconcileDepsReal, p: ReconcilePosition, leg: BracketLeg): Promise<boolean> {
@@ -106,13 +106,10 @@ async function closePositionFromExchange(deps: ReconcileDepsReal, p: ReconcilePo
   return closed;
 }
 
-async function reprotectOrFlatten(deps: ReconcileDepsReal, p: ReconcilePosition): Promise<boolean> {
+async function reprotectOrFlatten(deps: ReconcileDepsReal, p: ReconcilePosition, legs: BracketLeg[]): Promise<boolean> {
   try {
     const oco = await deps.placeOco(deps.client, { symbol: p.symbol, qty: p.size, sl: p.sl, tp: p.tp });
-    if (p.decisionId) {
-      await insertBracketLeg({ idempotencyKey: `${p.id}:sl`, decisionId: p.decisionId, size: p.size, purpose: 'sl', parentId: p.id, mode: deps.mode, exchangeOrderId: oco.slOrderId });
-      await insertBracketLeg({ idempotencyKey: `${p.id}:tp`, decisionId: p.decisionId, size: p.size, purpose: 'tp', parentId: p.id, mode: deps.mode, exchangeOrderId: oco.tpOrderId });
-    }
+    if (p.decisionId) await persistOcoLegs(p.decisionId, p.id, p.size, deps.mode, legs, oco);
     await setPositionProtected(p.id, true);
     await appendAuditLog({ eventType: 'reconcile_reprotected', actor: 'reconciler', payload: { positionId: p.id, orderListId: oco.orderListId } });
     return true;
@@ -123,6 +120,19 @@ async function reprotectOrFlatten(deps: ReconcileDepsReal, p: ReconcilePosition)
     await appendAuditLog({ eventType: 'reconcile_reprotect_emergency', actor: 'reconciler', payload: { positionId: p.id, realized } });
     return closed;
   }
+}
+
+// FIX H2: actualiza las legs sl/tp EN SITIO si existen (setOrderExchangeId); inserta solo si faltan.
+// Mantiene exactamente 2 filas por decisión (evita las 4 filas divergentes que rompían cancelOco/trailing).
+async function persistOcoLegs(decisionId: string, positionId: string, size: number, mode: TradingMode, legs: BracketLeg[], oco: { slOrderId: string; tpOrderId: string }): Promise<void> {
+  await upsertLeg(legs, 'sl', oco.slOrderId, decisionId, positionId, size, mode);
+  await upsertLeg(legs, 'tp', oco.tpOrderId, decisionId, positionId, size, mode);
+}
+
+async function upsertLeg(legs: BracketLeg[], purpose: 'sl' | 'tp', exchangeOrderId: string, decisionId: string, positionId: string, size: number, mode: TradingMode): Promise<void> {
+  const existing = legs.find((l) => l.purpose === purpose);
+  if (existing) await setOrderExchangeId(existing.id, exchangeOrderId);
+  else await insertBracketLeg({ idempotencyKey: `${positionId}:${purpose}`, decisionId, size, purpose, parentId: positionId, mode, exchangeOrderId });
 }
 
 // Orquestador: A.1 (entradas) + A.2 (posiciones). Arranque y tick periódico llaman esto.
