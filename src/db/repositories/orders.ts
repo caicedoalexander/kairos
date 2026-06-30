@@ -125,3 +125,47 @@ export async function findOrphanedClosedLegs(mode: TradingMode, exec: Executor =
     [mode],
   );
 }
+
+export interface UnresolvedEntry { id: string; idempotencyKey: string; decisionId: string; symbol: string; strategyId: string }
+
+// Entradas inciertas a reconciliar (A.1). Con FILTRO DE FRESCURA (FIX H1): excluye in-flight cuya
+// ventana de lock (SETUP_LOCK_TTL_MS) aún no expiró, para no pisar al executor. Sin posición para su decisión.
+export async function findUnresolvedEntries(mode: TradingMode, exec: Executor = query): Promise<UnresolvedEntry[]> {
+  const rows = await exec<{ id: string; idempotency_key: string; decision_id: string; symbol: string; strategy_id: string }>(
+    `SELECT o.id, o.idempotency_key, o.decision_id, s.symbol, s.strategy_id
+       FROM kairos.orders o
+       JOIN kairos.decisions d ON d.id = o.decision_id
+       JOIN kairos.signals s ON s.id = d.signal_id
+      WHERE o.purpose = 'entry' AND o.status IN ('pending', 'pending_execution') AND o.mode = $1
+        AND o.created_at < now() - interval '5 minutes'
+        AND NOT EXISTS (SELECT 1 FROM kairos.positions p WHERE p.decision_id = o.decision_id)`,
+    [mode],
+  );
+  return rows.map((r) => ({ id: r.id, idempotencyKey: r.idempotency_key, decisionId: r.decision_id, symbol: r.symbol, strategyId: r.strategy_id }));
+}
+
+// Gate de dedup (Componente D): ¿hay una entrada sin resolver para el setup? SIN filtro de frescura
+// (una pending_execution recién creada debe bloquear B de inmediato — FIX H1).
+export async function hasUnresolvedEntryForSetup(strategyId: string, symbol: string, mode: TradingMode, exec: Executor = query): Promise<boolean> {
+  const rows = await exec(
+    `SELECT 1 FROM kairos.orders o
+       JOIN kairos.decisions d ON d.id = o.decision_id
+       JOIN kairos.signals s ON s.id = d.signal_id
+      WHERE o.purpose = 'entry' AND o.status IN ('pending', 'pending_execution') AND o.mode = $3
+        AND s.strategy_id = $1 AND s.symbol = $2 LIMIT 1`,
+    [strategyId, symbol, mode],
+  );
+  return rows.length > 0;
+}
+
+export interface BracketLeg { id: string; purpose: 'sl' | 'tp'; exchangeOrderId: string | null; status: string }
+
+// Legs OCO de una decisión (monitor real + reconciler A.2): id en el exchange + estado.
+export async function getBracketLegs(decisionId: string, exec: Executor = query): Promise<BracketLeg[]> {
+  const rows = await exec<{ id: string; purpose: string; exchange_order_id: string | null; status: string }>(
+    `SELECT id, purpose, exchange_order_id, status FROM kairos.orders
+      WHERE decision_id = $1 AND purpose IN ('sl', 'tp')`,
+    [decisionId],
+  );
+  return rows.map((r) => ({ id: r.id, purpose: r.purpose as 'sl' | 'tp', exchangeOrderId: r.exchange_order_id, status: r.status }));
+}

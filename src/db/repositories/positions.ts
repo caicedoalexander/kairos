@@ -168,3 +168,38 @@ export async function closeOpenPosition(
   );
   return rows.length > 0;
 }
+
+export interface ReconcilePosition {
+  id: string; symbol: string; strategyId: string; decisionId: string | null;
+  entry: number; size: number; sl: number; tp: number; entryFee: number;
+}
+
+interface ReconcilePositionRow {
+  id: string; symbol: string; strategy_id: string; decision_id: string | null;
+  entry: string; size: string; sl: string; tp: string; entry_fee: string;
+}
+
+function mapReconcilePosition(r: ReconcilePositionRow): ReconcilePosition {
+  return { id: r.id, symbol: r.symbol, strategyId: r.strategy_id, decisionId: r.decision_id,
+    entry: Number(r.entry), size: Number(r.size), sl: Number(r.sl), tp: Number(r.tp), entryFee: Number(r.entry_fee) };
+}
+
+// Posiciones abiertas desprotegidas (reconciler A.2). protected=false = OCO no confirmado.
+export async function findUnprotectedPositions(mode: TradingMode, exec: Executor = query): Promise<ReconcilePosition[]> {
+  const rows = await exec<ReconcilePositionRow>(
+    `SELECT id, symbol, strategy_id, decision_id, entry, size, sl, tp, entry_fee
+       FROM kairos.positions WHERE status = 'open' AND mode = $1 AND protected = false`,
+    [mode],
+  );
+  return rows.map(mapReconcilePosition);
+}
+
+// Posiciones abiertas protegidas (monitor real). protected=true = OCO residente confirmado.
+export async function getProtectedOpenPositions(mode: TradingMode, exec: Executor = query): Promise<ReconcilePosition[]> {
+  const rows = await exec<ReconcilePositionRow>(
+    `SELECT id, symbol, strategy_id, decision_id, entry, size, sl, tp, entry_fee
+       FROM kairos.positions WHERE status = 'open' AND mode = $1 AND protected = true`,
+    [mode],
+  );
+  return rows.map(mapReconcilePosition);
+}

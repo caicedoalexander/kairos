@@ -1,6 +1,16 @@
 import { ulid } from 'ulidx';
 import { query, type Executor } from '../pool.ts';
 
+// SP13: lee los fills de una orden (P&L y detección de fills ya registrados). Auxiliar, NO es el
+// ancla de idempotencia (esa es la fila de posición; los fills son auditoría best-effort — FIX M2).
+export async function getFillsForOrder(orderId: string, exec: Executor = query): Promise<{ price: number; qty: number; fee: number }[]> {
+  const rows = await exec<{ price: string; qty: string; fee: string }>(
+    `SELECT price, qty, fee FROM kairos.fills WHERE order_id = $1 ORDER BY ts`,
+    [orderId],
+  );
+  return rows.map((r) => ({ price: Number(r.price), qty: Number(r.qty), fee: Number(r.fee) }));
+}
+
 export interface FillInput {
   orderId: string;
   price: number;
